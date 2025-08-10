@@ -43,7 +43,7 @@ class User(db.Model):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(string(80), nullable=Fales)
+    name: Mapped[str] = mapped_column(String(80), nullable=Fales)
     phone: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(120), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
