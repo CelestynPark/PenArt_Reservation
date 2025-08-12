@@ -6,7 +6,7 @@ sys.path.insert(0, str(ROOT))
 from app.policies.rules import (
     is_within_24h,
     can_change_or_cancel,
-    require_consecutive_slots
+    require_consecutive_slots,
 )
 
 def test_is_within_24h_true():
@@ -14,7 +14,7 @@ def test_is_within_24h_true():
     start = now + timedelta(hours=23, minutes=59)
     assert is_within_24h(start, now) is True
 
-def test_is_within_24h_true():
+def test_is_within_24h_false():
     now = datetime(2025, 8, 10, 12, 0, 0)
     start = now + timedelta(hours=24, minutes=0)
     assert is_within_24h(start, now) is False
@@ -33,7 +33,7 @@ def test_can_change_or_cancel_within_24h_with_token():
     assert ok is True and use_token is True
     assert "조율권" in msg
 
-def test_can_change_or_cancel_within_24h_with_token():
+def test_can_change_or_cancel_within_24h_no_token():
     now = datetime(2025, 8, 10, 12, 0, 0)
     start = now + timedelta(hours=2)
     ok, use_token, msg = can_change_or_cancel(start, now, adjust_tokens=0)

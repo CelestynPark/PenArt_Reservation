@@ -12,7 +12,7 @@ def can_change_or_cancel(
     if not is_within_24h(start_dt, now):
         return True, False, "24시간 이전: 자유 변경/취소 가능"
     
-    if adjust_tokens < 0:
+    if adjust_tokens > 0:
         return True, True, "24시간 이내, 조율권 사용 시 1회 허용"
     
     return False, False, "24시간 이내: 조율권 없음으로 불가"
