@@ -21,6 +21,7 @@ def signup():
 @bp.post("/login")
 def login():
     data = request.get_json(force=True, silent=True) or {}
+    print(data)
     ok, token_or_msg = authenticate(
         login=data.get("login", "").strip(),
         password=data.get("password", ""),
