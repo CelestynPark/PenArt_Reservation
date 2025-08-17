@@ -23,7 +23,7 @@ def _first_slot_datetime(slot: dict) -> datetime:
 
 def _fetch_enrollment(enrollment_id: str, user_id: ObjectId) -> dict | None:
     db = get_db()
-    return db.enrollment.find_one({"_id": ObjectId(enrollment_id),"user_id": user_id} )
+    return db.enrollments.find_one({"_id": ObjectId(enrollment_id),"user_id": user_id} )
 
 def _fetch_slots_for(course_type: str, date_str: str, start_str: str) -> List[dict]:
     db = get_db()
@@ -36,7 +36,7 @@ def _fetch_slots_for(course_type: str, date_str: str, start_str: str) -> List[di
         next_start = f"{h + 1:02d}:{m:02d}"
         slots = list(
             db.slots.find(
-                {'date': date_str, 'start': {"$in": [start_str, next_start], 'is_open': True}}
+                {'date': date_str, 'start': {"$in": [start_str, next_start]}, 'is_open': True}
             )
         )
         
@@ -52,10 +52,10 @@ def _ensure_slots_free(slot_ids: List[ObjectId]) -> bool:
 
 def _ensure_user_no_confict(user_id: ObjectId, slot_ids: List[ObjectId]) -> bool:
     db = get_db()
-    exsits = db.reservations.find_one(
+    exists = db.reservations.find_one(
         {'user_id': user_id, 'status': 'BOOKED', "slot_ids": {"$in": slot_ids}}
     )
-    return exsits in None
+    return exists is None
 
 def create_reservation(
         user_id: ObjectId,
@@ -98,10 +98,10 @@ def create_reservation(
         "created_at": datetime.now(timezone.utc)
     }
     res = db.reservations.insert_one(doc)
-
+    print(enroll['_id'])
     db.enrollments.update_one(
         {"_id": enroll["_id"]},
-        {f"$in": {"remaining_sessions": - 1}}
+        {f"$inc": {"remaining_sessions": -1}}
     )
 
     summary = {
@@ -111,7 +111,7 @@ def create_reservation(
         "slots_id": [str(x) for x in slot_ids],
         "status": 'BOOKED'
     }
-    return summary
+    return True, summary
 
 def _earliest_slot_datetime(slot_ids: List[ObjectId]) -> datetime:
     db = get_db()

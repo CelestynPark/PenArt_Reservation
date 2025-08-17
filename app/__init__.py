@@ -4,6 +4,7 @@ from .db import init_mongo, close_mongo
 from .schedule.routes import bp as schedule_bp
 from .auth.routes import bp as auth_bp
 from .reservations.routes import bp as resv_bp
+from .attendance.routes import bp as attendacne_bp
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -28,5 +29,7 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp, url_prefix="/auth")
 
     app.register_blueprint(resv_bp, url_prefix="/reservations")
+
+    app.register_blueprint(attendacne_bp, url_prefix="/attendance")
     
     return app

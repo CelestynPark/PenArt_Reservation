@@ -1,0 +1,37 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>PEN-ART | Login</h2>
+<form id="loginForm">
+    <label>전화번호 또는 이메일</label>
+    <input name="login" placeholder="01012345678 또는 email" required />
+    <label>비밀번호</label>
+    <input type="password" name="password" required />
+    <button type="submit">로그인</button>
+</form>
+
+<pre id="loginResult"></pre>
+
+<script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const payload = {
+            login: form.login.value.trim(),
+            password: form.password.value
+        };
+        const res = await fetch('/auth/login', {
+            method: 'POST',
+            header: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        }).then(r=r.json())
+        document.getElementById('loginResult').textContent = JSON.stringify(res, null, 2);
+        if (res.ok) {
+            window.localStorage.setItem('STMS_TOKEN', res.token);
+            alert('로그인 성공. 주간 일정 페이지로 이동합니다.');
+            window.location.href = '/schedule/week';
+        } else {
+            alert(res.error || '로그인 실패');
+        }
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>PEN-ART | Sign Up</h2>
+<form id="signupForm">
+    <label>이름</label>
+    <input name="name" required />
+    <label>전화번호</label>
+    <input name="phone" placeholder="01012345678" required />
+    <label>이메일</label>
+    <input name="email" />
+    <label>비밀번호</label>
+    <input type="password" name="password" required />
+    <button type="submit">가입</button>
+</form>
+
+<pre id="signupResult"></pre>
+
+<script>
+    document.getElementById('signupForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const payload = {
+            name: form.name.value.trim(),
+            phone: form.phone.value.trim(),
+            email: form.email.value.trim(),
+            password: form.password.value
+        };
+        const res = await fetch('/auth/signup', {
+            method: 'POST',
+            header: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        }).then(r=r.json())
+        document.getElementById('signupResult').textContent = JSON.stringify(res, null, 2);
+        if (res.ok) {
+            window.localStorage.setItem('STMT_TOKEN', res.token);
+            alert('가입 성공. 로그인 페이지로 이동합니다.');
+            window.location.href = '/schedule/week';
+        } else {
+            alert(res.error || '가입 실패');
+        }
+    });
+</script>
+{% endblock %}

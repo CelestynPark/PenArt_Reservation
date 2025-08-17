@@ -69,8 +69,10 @@ def jwt_required(fn):
         try:
             decoded = jwt.decode(token, _jwt_secret(), algorithms=["HS256"])
         except jwt.ExpiredSignatureError:
+            return jsonify({"ok": False, "error": "토큰이 만료되었습니다."}), 401
+        except jwt.InvalidTokenError:
             return jsonify({"ok": False, "error": "유효하지 않은 토큰입니다."}), 401
-        
+
         g.user_id = decoded.get("sub")
         g.user_name = decoded.get("name")
         if not g.user_id:

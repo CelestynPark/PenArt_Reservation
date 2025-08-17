@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Pen-Art 예약</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/static/css/base.css" rel="stylesheet" />
+</head>
+<body>
+    <header class="site-header">
+        <h1><a href="/">Pen-Art</a></h1>
+        <nav>
+            <a href="/auth/login">로그인</a>
+            <a href="/auth/signup">회원가입</a>
+            <a href="/schedule/week">주간 일정</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        {% block content %}{% endblock }
+    </main>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
