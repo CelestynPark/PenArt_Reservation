@@ -13,3 +13,5 @@ export async function api(url, opts = {}) {
     }
     return data;
 }
+
+window.api = api;

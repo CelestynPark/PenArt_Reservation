@@ -1,0 +1,286 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>PEN-ART | Weekly Slots</h2>
+
+<div class="toolbar">
+    <pan id="adminonly" style="display: none;">
+        <button id="btnOpen">이 주차 오픈</button>
+    </span>
+
+    <label class="inline">기준 날짜</label>
+    <input id="startDate" type="date" />
+    <button id="btnLoad">조회</button>
+
+    <span class="spacer"></span>
+
+    <label class="inline">내 과정</label>
+    <select value="enrollmentSelect">
+        <option value="">(로그인 후 불러오기)</option>
+    </select>
+    <button id="btnReloadEnrollment">새로고침</button>
+</div>
+
+<div id="alerts"></div>
+
+<div id="days"></div>
+
+<hr class="mt" />
+
+<h3>내 예약</h3>
+<div id="reservations"></div>
+
+<div class="modal" id="changeModal" hidden>
+    <div class="modal_backdrop" data-close="changeModal"></div>
+    <div class="modal_dialog" role="dialog" aria-modal="true" aria-labelledby="changeTitle">
+        <div class="modal_header">예약 변경</div>
+        <button class="modal_close" data-close="changeModal">x</button>
+    </div>
+    <div class="modal_body">
+        <form id="changeForm">
+            <input type="hidden" name="reservation_id" />
+            <div class="row">
+                <label>새 날짜</label>
+                <input type="date" name="date" required />
+            </div>
+            <div class="row">
+                <label>새 시작 시간</label>
+                <select name="start" required>
+                    <option value="10:00">10:00</option>
+                    <option value="11:00">11:00</option>
+                    <option value="12:00">12:00</option>
+                    <option value="14:00">14:00</option>
+                    <option value="15:00">15:00</option>
+                    <option value="16:00">16:00</option>
+                    <option value="17:00">17:00</option>
+                    <option value="18:00">18:00</option>
+                </select>
+            </div>
+            <div class="row">
+                <label class="inline">
+                    <input type="checkbox" name="use_adjust_token" />
+                    24시간 이내 변경 시 조율권 사용 도의
+                </label>
+            </div>
+            <div class="row-right">
+                <button type="button" class="btn ghost" data-close="changeModal">취소</button>
+                <button type="submit" class="btn primary">변경</button>
+            </div>
+        </form>
+        <pre id="changeResult" class="pre"></pre>
+    </div>
+</div>
+
+<script>
+function parseJwt(token) {
+    try {
+        const base64url = token.split(".")[1];
+        const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(jsonPayload);
+    } catch (e) { return null; }
+}
+
+const token = window.localStorage.getItem("STMS_TOKEN") || '';
+const payload = token ? parseJwt(token) : null;
+if (payload && (payload.role == 'admin')) {
+    document.getElementById('adminonly').style.display = 'inline-block';
+}
+
+const qs = new URLSearchParams(window.location.search);
+const urlStart = qs.get('start') || '';
+
+function alertBox(type, msg) {
+    const root = document,getElementById('alerts');
+    const div = document.createElement('div');
+    div.className = `alert ${type}`;
+    div.textContent = msg;
+    root.appendChild(div);
+    setTimeout(()=>div.remove(), 4000);
+}
+
+async function loadWeek(start) {
+    const u = start ? `/schedule/week?start=${start}` : `/schedule/week`;
+    const data = await fetch(u).then(r=>r.json());
+    if (!data.ok) { alert('조회 실패'); return; }
+
+    const root = document.getElementById('days');
+    root.innerHTML = '';
+    for (const [day, slots] of Object.entries(data.days)) {
+        const box = document.createElement('div');
+        box.className = 'day-box';
+        box.innerHTML = `<h3>${day}</h3>`;
+        const ul = document.createElement('ul');
+        slots.forEach(s=>{
+            const li = document.createElement('li');
+            const btn = document.createElement('button');
+            btn.className = 'btn sm';
+            btn.textContent = '예약';
+            btn.diabled = !s.is_open;
+            btn.addEventListener(`click`, ()=>tryCreateReservation(day, s.start));
+            li.innerHTML = `<span class="slot>${s.start} ~ ${s.end} ${s.is_open ? '' : '(마감)'}</span>`;
+            li.appendChild(btn)
+            ul.appendChild(li);
+        });
+        box.appendChild(ul);
+        root.appendChild(box);
+    }
+}
+
+async function loadEnrollment() {
+    const sel = document.getElementById('enrollments');
+    sel.innerHTML = '<option value="">(로딩 중...)</option>';
+    try {
+        const data = await api('/reservations/me/enrollments');
+        if (!data.items || data.items.length === 0) {
+            sel.innerHTML = '<option value="">(과정 없음)</option>';
+            return;
+        }
+        sel.innerHTML = '';
+        for (const e of data.items) {
+            const o = document.createElement('option');
+            o.value = e._id;
+            o.textContent = `[${e.course_type}] 잔여:${e.remaining_sessions} / 조율권:${e.adjust_tokens}`;
+            sel.appendChild(o);
+        }
+    } catch (err) {
+        sel.innerHTML = '<option value="">(로그인 필요)</option>';
+    }
+}
+
+async function tryCreateReservation(day, stat) {
+    const enrollment_id = document.getElementById('enrollmentSelect').value;
+    if (!token) { return alertBox('warn', '로그인 후 이용하세요.'); }
+    if (!enrollment_id) { return alertBox('warn', '먼저 우측 드롭다운에서 사용할 과정을 선택하세요.'); }
+
+    try {
+        const res = await api('/reservations', {
+            method: 'POST',
+            body: JSON.stringify({ enrollment_id, date, start })
+        });
+        alertBox('ok', '예약 완료');
+        await loadMyReservations();
+    } catch (e) {
+        alert('error', e.message || '예약 실패');
+    }
+}
+
+async function loadMyReservations() {
+    const root = document.getElementById('myReservations');
+    root.innerHTML = '<div class="muted">로딩 중...</div>';
+    try {
+        const data = await api('/reservations/me');
+        if (!data.items || data.items.length === 0) {
+            root.innerHTML = '<div class="muted">예약이 없습니다.</div>';
+            return;
+        }
+        const table = document.createElement('table');
+        table.className = 'table';
+        table.innerHTML = `
+            <thead><tr>
+                <th>예약ID</th>
+                <th>과정</th>
+                <th>슬롯ID</th>
+                <th>상태</th>
+                <th>조율권 사용</th>
+                <th></th>
+            </th></thead>
+            <tbody></tbody>
+        `;
+        const tb = table.querySelector('tbody');
+        for (const r of data.items) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td><code>${r._id}</code></td>
+                <td><code>${r.enrollment_id}</code></td>
+                <td><code="small">${r.slot_ids.join(', ')}</td>
+                <td>${r.status}</td>
+                <td>${r.used_adjust_token ? 'Y' : '-'}</td>
+                <td class="nowrap">
+                    <button class="btn xs" data-action="change" data-id="${r._id}">변경</button>
+                    <button class="btn xs ghost" data-action="cancel" data-id="${r._id}">취소</button>
+                </td>
+            `;
+            tb.appendChild(tr);
+        }
+        root.innerHTML = '';
+        root.appendChild(table);
+
+        root.querySelectorAll('button[data-action="change"]').forEach(btn=>{
+            btn.addEventListener('click', ()=> openChangeModal(btn.dataset.id));
+        })
+        root.querySelectorAll('button[data-action="cancel"]').forEach(btn=>{
+            btn.addEventListener('click', ()=> oncancel(btn.dataset.id));
+        })
+    } catch (e) {
+        root.innerHTML = `<div class="muted">로그인 필요 / 불러오기 실패</div>`;
+    }
+}
+
+function openChangeModal(reservationID) {
+    const modal = document.getElementsByName('changeModal');
+    modal.querySelector('input[name="reservation_id"]').value = reservationID;
+    modal.querySelector('#changeResult').textContent = '';
+    modal.hidden = false;
+}
+
+document.getElementById('click', (e) => {
+    const target = e.target.closest('[data-close]');
+    if (target) {
+        const id = target.getAttribute('data-close');
+        const modal = document.getElementById(id);
+        if (modal) modal.hidden = true;
+    }
+});
+
+document.getElementById('changeForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const reservation_id = fd.get('reservation_id');
+    const date = fd.get('date');
+    const start = fd.get('start');
+    const use_adjust_token = !!fd.get('use_adjust_token');
+
+    try {
+        const res = await api(`/reservations/${reservation_id}`, {
+            method: 'POST',
+            body: JSON.stringify({ date, start, use_adjust_token })
+        });
+        document.getElementById('changeResult').textContent = JSON.stringify(res, null, 2);
+        alertBox('ok', '변경 완료');
+        await loadMyReservations();
+    } catch (err) {
+        document.getElementById('changeresult').textContent = String(err.message || err);
+        alertBox('error', err.message || '변경 실패');
+    }
+});
+
+async function onCancel(reservationID) {
+    if (!confirm("정말로 이 예약을 취소하시겠습니까?\n24시간 이내 취소시 조율권이 차감됩니다.")) {
+        return;
+    }
+    const use = confirm('24시간 이내 취소라면 "확인"을 눌러 조율권을 사용에 동의하세요.\n(24시간 이전이면 뮈됩니다.)');
+    const qs = use ? '?use_adjust_token=true' : '';
+    
+}
+document.getElementById('btnLoad').addEventListener('click', ()=>{
+    const v = document.getElementById('startDate').value;
+    const p = v ? `?start=${v}` : '';
+    window.location.href = `/schedule/week${p}`;
+});
+
+const onOpen = async ()=>{
+    const v = document.getElementById('startDate').value;
+    const u = v ? `/schedule/open?start=${v}` : '/schedule/open';
+    const headers = token? {'Authorization': 'Bearer '+token} : {};
+    const res = await fetch(u, {method: 'POST', headers: headers}).then(r=>r.json());
+    if (res.ok) { alert(`오픈 완료: inserted=$(res.inserted}, skipped=${res.skipped}`); location.reload(); }
+    else { alert(res.error || '오픈 실패'); }
+};
+
+document.getElementById('btnOpen').addEventListener('click', onOpen);
+
+loadWeek(urlStart);
+</script>
+{% endblock %}

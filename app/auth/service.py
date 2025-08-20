@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Iterable
 
 import jwt
 from flask import current_app, request, jsonify, g
@@ -11,6 +11,8 @@ from bson import ObjectId
 
 from app.db import get_db
 from app.utils.phone import normalize_phone
+
+ROLES = ("user", "admin")
 
 def _jwt_secret() -> str:
     return current_app.config["SECRET_KEY"]
@@ -30,8 +32,17 @@ def create_user(name: str, phone_raw: str, email: Optional[str], password: str) 
         "phone": phone,
         "email": email,
         "password_hash": generate_password_hash(password),
+        "role": "user",
         "created_at": datetime.now(timezone.utc),
     }
+    print({
+        "name": name,
+        "phone": phone,
+        "email": email,
+        "password_hash": password,
+        "role": "user",
+        "created_at": datetime.now(timezone.utc),
+    })
     res = db.users.insert_one(doc)
     return True, str(res.inserted_id)
 
@@ -53,6 +64,7 @@ def authenticate(login: str, password: str) -> Tuple[bool, str]:
     payload = {
         "sub": str(user["_id"]),
         "name": user["name"],
+        "role": user.get("role", "user"),
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(hours=12),
     }
@@ -75,10 +87,24 @@ def jwt_required(fn):
 
         g.user_id = decoded.get("sub")
         g.user_name = decoded.get("name")
+        g.user_role = decoded.get("role", "uesr")
+
         if not g.user_id:
             return jsonify({"ok": False, "error": "토큰에 사용자 정보가 없습니다."}), 401
         return fn(*args, **kwargs)
     return wrapper
+
+def role_required(allowed: Iterable[str]):
+    allowed_set = set(allowed)
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            role = getattr(g, "user_role", None)
+            if role not in allowed_set:
+                return jsonify({"ok": False, "error": "권한이 없습니다."}), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
 
 def current_user_id() -> Optional[ObjectId]:
     try:

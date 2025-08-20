@@ -23,12 +23,12 @@
             method: 'POST',
             header: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
-        }).then(r=r.json())
+        }).then(r=>r.json())
         document.getElementById('loginResult').textContent = JSON.stringify(res, null, 2);
         if (res.ok) {
             window.localStorage.setItem('STMS_TOKEN', res.token);
             alert('로그인 성공. 주간 일정 페이지로 이동합니다.');
-            window.location.href = '/schedule/week';
+            window.location.href = '/ui/schedule';
         } else {
             alert(res.error || '로그인 실패');
         }

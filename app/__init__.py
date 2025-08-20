@@ -5,6 +5,7 @@ from .schedule.routes import bp as schedule_bp
 from .auth.routes import bp as auth_bp
 from .reservations.routes import bp as resv_bp
 from .attendance.routes import bp as attendacne_bp
+from .ui.routes import bp as ui_bp
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -14,6 +15,11 @@ def create_app() -> Flask:
     init_mongo(app)
     app.teardown_appcontext(close_mongo)
 
+    @app.get('/')
+    def index():
+        from flask import redirect, url_for
+        return redirect(url_for('ui/schedule_page'))
+    
     @app.get("/health")
     def health():
         return jsonify({"status": "ok"}), 200
@@ -31,5 +37,7 @@ def create_app() -> Flask:
     app.register_blueprint(resv_bp, url_prefix="/reservations")
 
     app.register_blueprint(attendacne_bp, url_prefix="/attendance")
+
+    app.register_blueprint(ui_bp, url_prefix="/ui")
     
     return app

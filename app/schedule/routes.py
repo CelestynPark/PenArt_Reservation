@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request
 from datetime import datetime, date
 from app.utils.time import KST
 from .service import open_week_slots, get_week_slots
+from app.auth.service import jwt_required, role_required
 
 bp = Blueprint("schedule", __name__)
 
@@ -20,6 +21,8 @@ def week():
     return jsonify({"ok": True, "base_date": d.isoformat(), 'days':data})
 
 @bp.post("/open")
+@jwt_required
+@role_required(["admin"])
 def open_week():
     start = request.args.get("start")
     d = _parse_date_or_today(start)
