@@ -1,5 +1,7 @@
+/* 기본 레이아웃 */
+
 body {
-    font-family: system-ui, sans-serif;
+    font-family: system-ui, -apple-system, Segeo UI, Roboto, sans-serif;
     margin: 0;
     background: #f8f8f8;
     color: #0f172a;
@@ -28,8 +30,20 @@ body {
 
 .toolbar {
     display: flex;
+    align-items: center;
     gap: 8px;
     margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.inline {
+    margin-right: 6px;
+    font-size: 14px;
+    color: #334155;
+}
+
+.spacer {
+    flex: 1;
 }
 
 .day-box {
@@ -40,7 +54,30 @@ body {
     margin-bottom: 12px;
 }
 
-button {
+.day-box ul {
+    list-style-type: none;
+    padding-left: 0;
+    margin: 0;
+}
+
+.day-box li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 4px;
+    border-bottom: 1px dashed #e5e7eb; 
+}
+
+.day-box li:last-child {
+    border-bottom: none;
+}
+
+.slot {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 버튼/폼 */
+button, .btn {
     padding: 8px 12px;
     border: 1px solid #cbd5e1;
     background: #f1f5f9;
@@ -48,8 +85,162 @@ button {
     cursor: pointer
 }
 
+button:hover, .btn:hover {
+    filter: brightness(0.98);
+}
+
+.btn.primary {
+    background: #2563eb;
+    border-color: #1d4ed8;
+    color: white;
+}
+
+.btn.ghost {
+    background: white;
+}
+
+.btn.sm {
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+.btn.xs {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.nowrap {
+    white-space: nowrap;
+}
+
+.small {
+    font-size: 12px;
+}
+
+/* 테이블 */
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.table th, .table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+}
+
+.table th {
+    background: #f8fa8c;
+}
+
+/* 알림 */
+.alert {
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin: 8px 0;
+}
+
+.alert {
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin: 8px 0;
+}
+
+.alert.ok {
+    background-color: #ecf3ff;
+    color: #155e75;
+    border: 1px solid #a5f3fc;
+}
+
+.alert.error {
+    background-color: #ecf3ff;
+    color: #911b1b;
+    border: 1px solid #fecaca;
+}
+
+.alert.warn {
+    background-color: #fffbeb;
+    color: #92400e;
+    border: 1px solid #fde68a;
+}
+
+.mt {
+    margin-top: 24px;
+}
+
+/* 모달 */
+.modal[hidden] {
+    display: none;
+}
+
+.modal__backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, .4)
+}
+
+.modal__dialog {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    width: min(520px, 92vw);
+    border-radius: 12px;
+    box-shadow: 0 20px 40px rgba(2, 6, 23, .2);
+}
+
+.modal__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.modal__body {
+    padding: 12px 16px 16px;
+}
+
+.modal__close {
+    border: none;
+    background: transparent;
+    font-size: 20px;
+    cursor: pointer;
+}
+
+.row {
+    margin: 10px 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.row.right {
+    justify-content: flex-end;
+}
+
+.label.inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
 input, select {
     padding: 6px 8px;
     border: 1px solid #cbd5e1;
     border-radius: 6px;
+}
+
+.pre {
+    background-color: #0b1220;
+    color: #e2e8f0;
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 12px;
+    overflow: auto;
 }

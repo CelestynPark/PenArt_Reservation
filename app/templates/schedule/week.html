@@ -262,8 +262,16 @@ async function onCancel(reservationID) {
     }
     const use = confirm('24시간 이내 취소라면 "확인"을 눌러 조율권을 사용에 동의하세요.\n(24시간 이전이면 뮈됩니다.)');
     const qs = use ? '?use_adjust_token=true' : '';
+    try {
+        const res = await api(`/reservations/${reservationID}${qs}`, { method: 'DELETE' });
+        alertBox('ok', '취소 완료');
+        await loadMyReservations();
+    } catch (err) {
+        alertBox('error', err.message || '취소 실패');
+    }
     
 }
+
 document.getElementById('btnLoad').addEventListener('click', ()=>{
     const v = document.getElementById('startDate').value;
     const p = v ? `?start=${v}` : '';
@@ -282,5 +290,7 @@ const onOpen = async ()=>{
 document.getElementById('btnOpen').addEventListener('click', onOpen);
 
 loadWeek(urlStart);
+loadEnrollment();
+loadMyReservations();
 </script>
 {% endblock %}
