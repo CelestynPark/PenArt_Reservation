@@ -1,31 +1,41 @@
-from app import create_app
+from __future__ import annotations
+import atexit
+import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
-from datetime import datetime
-from app.utils.time import KST
-from app.schedule.service import open_week_slots
-from app.attendance.service import sweep_no_show
+from pytz import timezone
 
-app = create_app()
+from app import create_app
+from app.config import Config
 
-def job_open_week():
+# Flask 앱 생성
+app = create_app(Config)
+
+#  ==== APScheduler 스텁 ====
+# - 월요일 10:00 "주간 슬롯 오픈"
+# - 5분마다 "NO_SHOW 스캔"
+
+kst = timezone(app.config.get("TIMEZONE", "Asia/Seoul"))
+scheduler = BackgroundScheduler(timezone=kst)
+log = logging.getLogger('apscheduler')
+
+
+def job_open_week_slots():
     with app.app_context():
-        base_date = datetime.now(tz=KST).date()
-        result = open_week_slots(base_date)
-        app.logger.info(f"[OPEN_WEEK] base={base_date} -> {result}")
+        app.logger.info("[JOB] open_week_slots(): (스텁) 월요일 10시 오픈 작업 실행")
 
-def job_authnoshow():
+def job_scan_no_show():
     with app.app_context():
-        result = sweep_no_show(grace_minutes=10)
-        app.logger.info(f"[AUTO_NOSHOW] {result}")
+        app.logger.info("[JOB] scan_no_show(): (스텁) NO_SHOW 주기 스캔 작업 실행")
 
-scheduler = BackgroundScheduler(timezone="Asia/Seoul")
-scheduler.add_job(job_open_week, CronTrigger(day_of_week="mon", hour=10, minute=0))
-scheduler.add_job(job_authnoshow, IntervalTrigger(minutes=10))
+# 크론 등록
+scheduler.add_job(job_open_week_slots, CronTrigger(day_of_week='mon', hour=10, minute=0))
+scheduler.add_job(job_scan_no_show, "interval", minutes=5)
+
 scheduler.start()
+atexit.register(lambda: scheduler.shutdown(wait=False))
 
 
-if __name__== "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=(app.config["ENV"] == "development"))
     

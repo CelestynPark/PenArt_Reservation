@@ -13,6 +13,8 @@ def _parse_date_or_today(v: str | None) -> date:
         return datetime.now(tz=KST).date()
     return datetime.strptime(v, "%Y-%m-%d").date()
 
+
+
 @bp.get("/week")
 def week():
     start = request.args.get("start")
