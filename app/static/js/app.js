@@ -1,4 +1,4 @@
-export async function api(url, opts = {}) {
+async function api(url, opts = {}) {
     const token = window.localStorage.getItem('STMS_TOKEN');
     const headers = Object.assign(
         { 'Content-Type': 'application/json'},
@@ -14,4 +14,21 @@ export async function api(url, opts = {}) {
     return data;
 }
 
+function getToken() { return window.localStorage.getItem('STMS_TOKEN') || ''; }
+
+function getJwtPayload(token) {
+    try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/_/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURI(atob(base64).split('').map(function (c) {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(jsonPayload);
+    } catch (e) {
+        return null;
+    }
+}
+
 window.api = api;
+window.getToken = getToken;
+window.getJwtPayload = getJwtPayload

@@ -9,6 +9,21 @@ def main():
     with app.app_context():
         db = app.config["MONGO_DB_HANDLE"]
 
+        phone = "+821011112222"
+        user = db.users.find_one({"phone": phone})
+        if not user:
+            uid = db.users.insert_one({
+                "name": "관리자",
+                "phone": phone,
+                "email": "admin@example.com",
+                "role": "admin",
+                "password_hash": generate_password_hash("pass1234"),
+                "created_at": datetime.utcnow()
+            }).inserted_id
+            print(f"[dev_seed] user created: {uid}")
+        else:
+            print(f"[dev_seed] user exists: {user['_id']}")
+
         phone = "+8210123456789"
         user = db.users.find_one({"phone": phone})
         if not user:

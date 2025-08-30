@@ -3,7 +3,7 @@
 <h2>PEN-ART | Weekly Slots</h2>
 
 <div class="toolbar">
-    <pan id="adminonly" style="display: none;">
+    <span id="adminonly" style="display: none;">
         <button id="btnOpen">이 주차 오픈</button>
     </span>
 
@@ -14,7 +14,7 @@
     <span class="spacer"></span>
 
     <label class="inline">내 과정</label>
-    <select value="enrollmentSelect">
+    <select id="enrollmentSelect">
         <option value="">(로그인 후 불러오기)</option>
     </select>
     <button id="btnReloadEnrollment">새로고침</button>
@@ -22,12 +22,26 @@
 
 <div id="alerts"></div>
 
-<div id="days"></div>
+<div id="adminEnroll" class="day-box" style="display: none;">
+    <h3>관리자용: 과정 추가</h3>
+    <div class="row">
+        <label>전화번호</label>
+        <input name="admPhone" placeholder="01012345678" />
+        <label>코스</label>
+        <select id="admCourse" required>
+            <option value="BEGINNER">BEGINNER(60x8)</option>
+            <option value="INTERMEDIATE">INTERMEDIATE(60x4)</option>
+            <option value="ADVANCED">ADVANCED(120x4)</option>
+        </select>
+        <button id="admCreate" class="btn primary">생성</button>
+    </div>
+    <p class="hint">* 전화번호는 가입된 사용자이어야 합니다. 생성 후 "내 과정 새로고침"으로 반영하세요.</p>
+</div>
 
 <hr class="mt" />
 
 <h3>내 예약</h3>
-<div id="reservations"></div>
+<div id="myReservations"></div>
 
 <div class="modal" id="changeModal" hidden>
     <div class="modal_backdrop" data-close="changeModal"></div>
@@ -84,15 +98,16 @@ function parseJwt(token) {
 
 const token = window.localStorage.getItem("STMS_TOKEN") || '';
 const payload = token ? parseJwt(token) : null;
-if (payload && (payload.role == 'admin')) {
+if (payload && (payload.role === 'admin')) {
     document.getElementById('adminonly').style.display = 'inline-block';
+    document.getElementById('adminEnroll').style.display = 'block';
 }
 
 const qs = new URLSearchParams(window.location.search);
 const urlStart = qs.get('start') || '';
 
 function alertBox(type, msg) {
-    const root = document,getElementById('alerts');
+    const root = document.getElementById('alerts');
     const div = document.createElement('div');
     div.className = `alert ${type}`;
     div.textContent = msg;
@@ -119,7 +134,7 @@ async function loadWeek(start) {
             btn.textContent = '예약';
             btn.diabled = !s.is_open;
             btn.addEventListener(`click`, ()=>tryCreateReservation(day, s.start));
-            li.innerHTML = `<span class="slot>${s.start} ~ ${s.end} ${s.is_open ? '' : '(마감)'}</span>`;
+            li.innerHTML = `<span class="slot">${s.start} ~ ${s.end} ${s.is_open ? '' : '(마감)'}</span>`;
             li.appendChild(btn)
             ul.appendChild(li);
         });
@@ -129,7 +144,7 @@ async function loadWeek(start) {
 }
 
 async function loadEnrollment() {
-    const sel = document.getElementById('enrollments');
+    const sel = document.getElementById('enrollmentSelect');
     sel.innerHTML = '<option value="">(로딩 중...)</option>';
     try {
         const data = await api('/reservations/me/enrollments');
@@ -145,11 +160,12 @@ async function loadEnrollment() {
             sel.appendChild(o);
         }
     } catch (err) {
+        console.log(err)
         sel.innerHTML = '<option value="">(로그인 필요)</option>';
     }
 }
 
-async function tryCreateReservation(day, stat) {
+async function tryCreateReservation(day, start) {
     const enrollment_id = document.getElementById('enrollmentSelect').value;
     if (!token) { return alertBox('warn', '로그인 후 이용하세요.'); }
     if (!enrollment_id) { return alertBox('warn', '먼저 우측 드롭다운에서 사용할 과정을 선택하세요.'); }
@@ -157,12 +173,13 @@ async function tryCreateReservation(day, stat) {
     try {
         const res = await api('/reservations', {
             method: 'POST',
-            body: JSON.stringify({ enrollment_id, date, start })
+            body: JSON.stringify({ enrollment_id, date: day, start })
         });
         alertBox('ok', '예약 완료');
         await loadMyReservations();
     } catch (e) {
-        alert('error', e.message || '예약 실패');
+        console.log(e);
+        alertBox('error', e.message || '예약 실패');
     }
 }
 
@@ -269,7 +286,6 @@ async function onCancel(reservationID) {
     } catch (err) {
         alertBox('error', err.message || '취소 실패');
     }
-    
 }
 
 document.getElementById('btnLoad').addEventListener('click', ()=>{
@@ -288,6 +304,23 @@ const onOpen = async ()=>{
 };
 
 document.getElementById('btnOpen').addEventListener('click', onOpen);
+
+document.getElementById('admCreate').addEventListener('click', async () => {
+    const phone = document.getElementById('admPhone').value.trim();
+    const course_type = document.getElementById('admCourse').value;
+    if (!phone) {
+        return alertBox('warn', '전화번호를 입력하세요.');
+    }
+    try {
+        const res = await api('/reservations/admin/enrollments', {
+            method: 'POST',
+            body: JSON.stringify({ phone, course_type })
+        });
+        alertBox('ok', `과정 생성 완료: ${res.enrollment_id}`);
+    } catch (e) {
+        alertBox('error', e.message || '과정 생성 실패');
+    }
+})
 
 loadWeek(urlStart);
 loadEnrollment();
