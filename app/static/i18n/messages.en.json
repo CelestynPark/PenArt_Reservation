@@ -1,0 +1,423 @@
+{
+  "lang": "en",
+  "app": {
+    "title": "Pen Art",
+    "brand": "Pen Art"
+  },
+  "common": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "close": "Close",
+    "save": "Save",
+    "create": "Create",
+    "edit": "Edit",
+    "delete": "Delete",
+    "update": "Update",
+    "submit": "Submit",
+    "back": "Back",
+    "next": "Next",
+    "prev": "Previous",
+    "loading": "Loading...",
+    "search": "Search",
+    "reset": "Reset",
+    "yes": "Yes",
+    "no": "No",
+    "confirm": "Confirm",
+    "status": "Status",
+    "actions": "Actions",
+    "filters": "Filters",
+    "total": "Total",
+    "count": "Count",
+    "name": "Name",
+    "email": "Email",
+    "phone": "Phone",
+    "memo": "Note",
+    "created_at": "Created",
+    "updated_at": "Updated",
+    "empty": "No data available.",
+    "unknown": "Unknown",
+    "copied": "Copied to clipboard",
+    "copy": "Copy",
+    "apply": "Apply",
+    "download": "Download",
+    "view": "View"
+  },
+  "nav": {
+    "home": "Home",
+    "gallery": "Gallery",
+    "classes": "Classes",
+    "news": "News",
+    "goods": "Goods",
+    "studio": "Studio",
+    "reviews": "Reviews",
+    "booking": "Booking",
+    "my": "My Page",
+    "admin": "Admin",
+    "orders": "Orders",
+    "logout": "Log out",
+    "login": "Log in",
+    "lang_switch": "Language"
+  },
+  "auth": {
+    "signin": "Sign in",
+    "signup": "Sign up",
+    "signout": "Sign out",
+    "magic_link": "Send login link by email",
+    "otp_sms": "Send verification code by SMS",
+    "sent": "Sent",
+    "verify": "Verify"
+  },
+  "validation": {
+    "required": "{field} is required",
+    "email": "Invalid email format",
+    "phone": "Please check the phone number format",
+    "min_length": "{field} must be at least {min} characters",
+    "max_length": "{field} must be at most {max} characters",
+    "numeric": "{field} must be a number",
+    "integer": "{field} must be an integer",
+    "min_value": "{field} must be ≥ {min}",
+    "max_value": "{field} must be ≤ {max}",
+    "accept_terms": "You must agree to continue",
+    "file_type": "Unsupported file type",
+    "file_size": "File exceeds max size ({max}MB)"
+  },
+  "http": {
+    "BAD_REQUEST": "The request is invalid",
+    "UNAUTHORIZED": "Authentication required",
+    "FORBIDDEN": "You do not have permission",
+    "NOT_FOUND": "The requested resource was not found",
+    "CONFLICT": "The request conflicts with the current state",
+    "RATE_LIMIT": "Too many requests. Please try again later",
+    "SERVER_ERROR": "An internal server error occurred",
+    "TIMEOUT": "The request is taking too long. Please try again",
+    "UNAVAILABLE": "Service is currently unavailable",
+    "PAYLOAD_TOO_LARGE": "Upload size limit exceeded",
+    "UNSUPPORTED_MEDIA_TYPE": "Unsupported media type",
+    "NETWORK": "Please check your network connection"
+  },
+  "errors": {
+    "GENERIC": "We couldn’t process your request. Please try again later",
+    "ERR_FORBIDDEN": "Not authorized",
+    "ERR_CONFLICT": "This time slot is already booked",
+    "ERR_POLICY_CUTOFF": "Change/cancel cutoff time has passed",
+    "ERR_SLOT_BLOCKED": "The selected time is not available",
+    "ERR_OUT_OF_STOCK": "Insufficient stock",
+    "ERR_INVALID_QUANTITY": "Invalid quantity",
+    "ERR_ORDER_EXPIRED": "The order has expired",
+    "ERR_ALREADY_PAID": "The order is already marked as paid",
+    "ERR_ORDER_CANNOT_CANCEL": "The order cannot be canceled in the current status",
+    "ERR_INVALID_STATE": "Invalid state transition",
+    "ERR_RECEIPT_REQUIRED": "Please attach a receipt image"
+  },
+  "components": {
+    "toast": {
+      "title_success": "Success",
+      "title_error": "Error",
+      "title_info": "Info",
+      "dismiss": "Close"
+    },
+    "modal": {
+      "confirm_title": "Confirm",
+      "confirm_message": "Do you want to proceed?",
+      "danger_message": "This cannot be undone. Continue?"
+    },
+    "lang": {
+      "ko": "Korean",
+      "en": "English",
+      "switch_to": "View in {lang}"
+    },
+    "pagination": {
+      "prev": "Previous",
+      "next": "Next",
+      "page": "{page} / {pages}"
+    }
+  },
+  "dates": {
+    "today": "Today",
+    "tomorrow": "Tomorrow",
+    "at_time": "{time}",
+    "date_time": "{date} {time}"
+  },
+  "studio": {
+    "title": "About the Studio",
+    "hours": "Hours",
+    "address": "Address",
+    "contact": "Contact",
+    "notice": "Notice",
+    "map": "Map",
+    "directions": "Directions",
+    "styles": "Styles"
+  },
+  "gallery": {
+    "title": "Gallery",
+    "tab_artist": "Artist",
+    "tab_student": "Student",
+    "detail": "View work",
+    "tags": "Tags",
+    "by": "By {author}"
+  },
+  "classes": {
+    "title": "Classes",
+    "duration": "Duration",
+    "level": "Level",
+    "materials": "Materials",
+    "prerequisites": "Prerequisites",
+    "notes": "Notes",
+    "book_now": "Book now",
+    "featured": "Featured"
+  },
+  "availability": {
+    "pick_date": "Select a date",
+    "pick_time": "Select a time",
+    "no_slots": "No available time slots",
+    "timezone_note": "Shown in your local timezone"
+  },
+  "booking": {
+    "title": "Booking",
+    "steps": {
+      "service": "Choose class",
+      "date": "Choose date",
+      "time": "Choose time",
+      "review": "Info & terms",
+      "complete": "Complete"
+    },
+    "form": {
+      "service": "Class",
+      "name": "Name",
+      "phone": "Phone",
+      "memo": "Requests (optional)",
+      "agree": "I agree to the terms and guidance",
+      "uploads": "Attachments (optional)"
+    },
+    "submit": "Submit booking",
+    "success_requested": "Your booking request has been received",
+    "success_confirmed": "Your booking has been confirmed",
+    "code": "Booking code",
+    "start_at": "Start",
+    "end_at": "End",
+    "policy": {
+      "cancel_before_hours": "Cancel cutoff: {hours}h before",
+      "change_before_hours": "Change cutoff: {hours}h before",
+      "no_show_after_min": "No-show after {min} min late"
+    },
+    "status": {
+      "requested": "Requested",
+      "confirmed": "Confirmed",
+      "completed": "Completed",
+      "canceled": "Canceled",
+      "no_show": "No-show"
+    },
+    "actions": {
+      "cancel": "Cancel booking",
+      "reschedule": "Reschedule",
+      "add_note": "Add note"
+    }
+  },
+  "reviews": {
+    "title": "Reviews",
+    "new": "Write a review",
+    "rating": "Rating",
+    "quote": "Headline",
+    "comment": "Comment (optional)",
+    "images": "Images (optional)",
+    "has_person": "Contains people",
+    "submit": "Submit review",
+    "avg_rating": "Average rating {rating}",
+    "status": {
+      "published": "Published",
+      "hidden": "Hidden",
+      "flagged": "Flagged"
+    }
+  },
+  "news": {
+    "title": "News",
+    "read_more": "Read more",
+    "published_at": "Published"
+  },
+  "goods": {
+    "title": "Goods",
+    "price": "Price",
+    "currency": "KRW",
+    "stock_count": "Stock",
+    "out_of_stock": "Out of stock",
+    "quantity": "Quantity",
+    "order": "Order",
+    "inquire": "Inquire",
+    "external_link": "Open external link",
+    "status": {
+      "draft": "Draft",
+      "published": "Published"
+    }
+  },
+  "order": {
+    "title": "Order",
+    "method_bank_transfer": "Bank transfer",
+    "buyer": {
+      "name": "Buyer name",
+      "phone": "Phone",
+      "email": "Email"
+    },
+    "summary": {
+      "item": "Item",
+      "quantity": "Quantity",
+      "amount_total": "Total",
+      "currency": "Currency",
+      "expires_at": "Payment deadline"
+    },
+    "bank": {
+      "title": "Bank account details",
+      "bank_name": "Bank",
+      "account_no": "Account No.",
+      "holder": "Account holder",
+      "instruction": "Please transfer {amount_total}{currency} to {bank_name} {account_no} ({holder}) before the deadline",
+      "copy_account": "Copy account number"
+    },
+    "receipt": {
+      "title": "Receipt",
+      "upload": "Upload image",
+      "uploaded": "Receipt uploaded"
+    },
+    "submit": "Create order",
+    "success_created": "Order received. Check the payment instructions",
+    "code": "Order code",
+    "status": {
+      "created": "Created",
+      "awaiting_deposit": "Awaiting deposit",
+      "paid": "Paid",
+      "canceled": "Canceled",
+      "expired": "Expired"
+    },
+    "actions": {
+      "cancel": "Cancel order",
+      "attach_receipt": "Attach receipt",
+      "mark_paid": "Mark as paid",
+      "expire": "Mark expired",
+      "note": "Internal note"
+    },
+    "policy": {
+      "expire_hours": "Payment deadline: {hours}h after creation",
+      "inventory_policy_hold": "Inventory: hold on order",
+      "inventory_policy_deduct_on_paid": "Inventory: deduct on paid"
+    }
+  },
+  "my": {
+    "bookings": "My bookings",
+    "orders": "My orders",
+    "reviews": "My reviews",
+    "profile": "Profile",
+    "order_detail": "Order detail",
+    "booking_detail": "Booking detail"
+  },
+  "admin": {
+    "layout": {
+      "dashboard": "Dashboard",
+      "calendar": "Calendar",
+      "bookings": "Bookings",
+      "classes": "Classes",
+      "gallery": "Gallery",
+      "reviews": "Reviews",
+      "news": "News",
+      "goods": "Goods",
+      "orders": "Orders",
+      "settings": "Settings",
+      "metrics": "Metrics"
+    },
+    "dashboard": {
+      "today_schedule": "Today's schedule",
+      "pending_bookings": "Pending bookings",
+      "new_reviews": "New reviews",
+      "awaiting_orders": "Awaiting deposit orders",
+      "visibility": "Visibility status"
+    },
+    "calendar": {
+      "availability_rules": "Availability rules",
+      "exceptions": "Exceptions/Holidays",
+      "blocks": "Blocks"
+    },
+    "bookings": {
+      "approve": "Confirm",
+      "reject": "Reject",
+      "cancel": "Cancel",
+      "reschedule": "Reschedule",
+      "no_show": "No-show",
+      "note_internal": "Internal note",
+      "auto_confirm": "Auto confirm"
+    },
+    "classes": {
+      "visible": "Visible",
+      "order": "Display order",
+      "featured": "Featured"
+    },
+    "gallery": {
+      "author_type": "Type",
+      "artist": "Artist",
+      "student": "Student",
+      "visible": "Visible"
+    },
+    "reviews": {
+      "moderate": "Moderate",
+      "hide": "Hide",
+      "publish": "Publish",
+      "flag": "Flag"
+    },
+    "news": {
+      "schedule_publish": "Schedule publish",
+      "status": "Status"
+    },
+    "goods": {
+      "price": "Price",
+      "stock": "Stock",
+      "contact_link": "Contact link",
+      "external_url": "External URL"
+    },
+    "orders": {
+      "mark_paid": "Mark paid",
+      "cancel": "Cancel",
+      "expire": "Expire",
+      "receipt": "Receipt",
+      "log": "Order log",
+      "status_filter": "Status filter"
+    },
+    "settings": {
+      "studio": "Studio",
+      "naver_map": "Naver Map",
+      "i18n": "Language",
+      "notify": "Notification templates",
+      "bank": "Bank account",
+      "bank_labels": {
+        "bank_name": "Bank",
+        "account_no": "Account No.",
+        "holder": "Account holder"
+      }
+    },
+    "metrics": {
+      "title": "Metrics",
+      "type": {
+        "daily": "Daily",
+        "weekly": "Weekly",
+        "monthly": "Monthly"
+      },
+      "booking_funnel": "Booking funnel",
+      "rates": {
+        "confirm": "Confirmation rate",
+        "cancel": "Cancellation rate",
+        "no_show": "No-show rate"
+      },
+      "reviews": "Reviews count / rating",
+      "content_views": "Content views",
+      "orders": {
+        "conversion_paid": "Paid conversion rate",
+        "expire_rate": "Expiry rate"
+      }
+    }
+  },
+  "seo": {
+    "home_title": "Pen Art | Booking, Gallery, Goods",
+    "home_desc": "Pen Art Studio — book classes, view works, news and goods",
+    "gallery_title": "Gallery | Pen Art",
+    "classes_title": "Classes | Pen Art",
+    "news_title": "News | Pen Art",
+    "goods_title": "Goods | Pen Art",
+    "studio_title": "Studio | Pen Art"
+  }
+}
