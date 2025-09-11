@@ -1,84 +1,145 @@
-[tool.poetry]
-name = "penart"
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pen-art"
 version = "0.1.0"
-description = "Pen Art"
-authors = ["Pen Art"]
+description = "Pen Art — Flask + MongoDB(Replica Set) 예약/주문/관리자 콘솔 서버"
 readme = "README.md"
-packages = [{ include = "app" }, { include = "scripts" }, { include = "openapi" }, { include = "docs" }]
-license = "MIT"
-
-[tool.poetry.dependencies]
-python = ">=3.11,<3.13"
-Flask = ">=3.0,<3.1"
-flask-cors = ">=4.0,<5.0"
-pymongo = ">=4.7,<5.0"
-APScheduler = ">=3.10,<4.0"
-python-dotenv = ">=1.0,<2.0"
-Babel = ">=2.15,<3.0"
-pydantic = ">=2.8,<3.0"
-email-validator = ">=2.1,<3.0"
-gunicorn = ">=21.2,<22.0"
-PyYAML = ">=6.0,<7.0"
-tzdata = ">=2024.1" # for Windows/containers
-Pillow = ">=10.3,<11.0"
-bleach = ">=6.1,<7.0"
-
-[tool.poetry.group.dev.dependencies]
-black = ">=24.4,<25.0"
-ruff = ">=0.5.0,<0.7.0"
-mypy = ">=1.10,<2.0"
-ipython = ">=8.25,<9.0"
-types-PyYAML = ">=6.0,<7.0"
-
-[tool.poetry.group.test.dependencies]
-pytest = ">=8.2,<9.0"
-pytest-cov = ">=5.0,<6.0"
-freezegun = ">=1.5,<2.0"
-faker = ">=26.0,<27.0"
-
-[tool.poetry.scripts]
-penart-manage = "scripts.manage:main"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Pen Art Team" }]
+keywords = ["flask", "mongodb", "apscheduler", "jinja", "ssr", "rest"]
 
 [tool.black]
 line-length = 100
 target-version = ["py311"]
-skip-string-normalization = false
+skip-string-normalization = true
+include = '\.pyi?$'
+exclude = '''
+(
+  \.eggs
+| \.git
+| \.hg
+| \.mypy_cache
+| \.ruff_cache
+| \.tox
+| \.venv
+| build
+| dist
+| node_modules
+| migrations
+)
+'''
 
 [tool.ruff]
-line-length = 100
 target-version = "py311"
-select = [
-"E","F","W", # pycodestyle/pyflakes
-"I", # isort
-"B", # flake8-bugbear
-"UP", # pyupgrade
-"ASYNC", # async rules
-"C4", # comprehensions
-"SIM", # simplify
-"RUF", # ruff-specific
+line-length = 100
+extend-exclude = [
+  ".venv", "build", "dist", "node_modules", "migrations", "scripts/init_replicaset.js"
 ]
-ignore = ["E203"] # black compatibility
+
+[tool.ruff.lint]
+# E,F: pycodestyle/pyflakes, I: isort, B: bugbear, C4: comprehensions, UP: pyupgrade
+# DTZ: naive datetime, S: bandit(security), PL: pylint subset, RUF: ruff extra, TRY: tryceratops
+select = ["E", "F", "I", "B", "C4", "UP", "DTZ", "S", "PL", "RUF", "TRY"]
+ignore = [
+  "E203",  # black과 충돌하는 whitespace 규칙
+  "S105", "S106",  # 테스트/시드에서 하드코드 비밀번호 경고는 per-file-ignores에서 관리
+]
+preview = false
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "scripts"]
+known-first-party = ["app", "tests"]
 combine-as-imports = true
+force-sort-within-sections = true
+
+[tool.ruff.lint.per-file-ignores]
+# 테스트: assert 허용, 보안/예외 패턴 완화
+"tests/**.py" = ["S101", "TRY003", "PLR2004"]
+# 패키지 공개용 __init__ re-export 허용
+"app/**/__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "preserve"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
 
 [tool.mypy]
 python_version = "3.11"
-warn_unused_ignores = true
-warn_redundant_casts = true
 warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+no_implicit_optional = true
 disallow_untyped_defs = true
-ignore_missing_imports = true
-plugins = []
+disallow_incomplete_defs = true
+check_untyped_defs = true
+strict_equality = true
+pretty = true
+show_error_codes = true
+namespace_packages = true
+ignore_missing_imports = true  # 외부 패키지 타입 힌트 미제공 대비
+
+# 폴더별 완화/강화 규칙
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = "scripts.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
 
 [tool.pytest.ini_options]
+minversion = "8.0"
 testpaths = ["tests"]
-addopts = "-ra -q --cov=app --cov=scripts --cov-report=term-missing"
+addopts = "-ra -q --maxfail=1"
+xfail_strict = true
 filterwarnings = [
-"ignore::DeprecationWarning",
+  "ignore::DeprecationWarning",
+  "ignore::pytest.PytestDeprecationWarning",
+]
+# KST 표시/UTC 저장 규약을 위한 환경 기본값(테스트에서 os.environ 미설정 시)
+env = [
+  "TIMEZONE=Asia/Seoul",
+  "DEFAULT_LANG=ko",
 ]
 
-[build-system]
-requires = ["poetry-core>=1.9.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.coverage.run]
+branch = true
+source = ["app"]
+omit = [
+  "app/__init__.py",
+  "app/extensions.py",
+  "app/middleware/*",
+  "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]
+
+[tool.pylint.'MAIN']  # 선택 사용(설치 시 적용); ruff와 중복 금지, CI에서 비활성 가능
+disable = [
+  "C0114","C0115","C0116",  # docstring 강제 비활성
+  "R0903",                   # too-few-public-methods
+]
+
+[tool.codespell]
+skip = ".git,*.lock,*.min.js,*.map,*.svg,*.png,*.jpg,*.jpeg,*.webp,*.pdf,build,dist,node_modules,.venv"
+ignore-words-list = "te,referer,aligment,nd"
+
+[tool.bandit]
+skips = ["B101"]  # assert 허용(테스트)

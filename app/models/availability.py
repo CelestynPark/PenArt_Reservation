@@ -1,382 +1,222 @@
 from __future__ import annotations
 
-import os
 import re
-from dataclasses import dataclass
-from datetime import date as _date, datetime, timedelta
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
-from flask import current_app
-from zoneinfo import ZoneInfo
+from bson import ObjectId
 
-from .base import BaseDocument, IndexDef, ASCENDING, DESCENDING
-from ..utils.validation import ValidationError
+from app.models.base import BaseModel, _coerce_dt, _coerce_id
 
-_HHMM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+_HHMM_RE = re.compile(r"^([0-2]\d):([0-5]\d)$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _cfg_tz() -> str:
+def _parse_hhmm(s: Any, *, field: str) -> int:
+    if not isinstance(s, str):
+        raise ValueError(f"{field} must be 'HH:MM'")
+    m = _HHMM_RE.fullmatch(s.strip())
+    if not m:
+        raise ValueError(f"{field} must match HH:MM")
+    h, mm = int(m.group(1)), int(m.group(2))
+    if h > 24:
+        raise ValueError(f"{field} hour out of range")
+    if h == 24 and mm != 0:
+        raise ValueError(f"{field} minute must be 00 when hour is 24")
+    total = h * 60 + mm
+    if total > 24 * 60:
+        raise ValueError(f"{field} out of day range")
+    return total
+
+
+def _minutes_to_hhmm(total: int) -> str:
+    h = total // 60
+    m = total % 60
+    return f"{h:02d}:{m:02d}"
+
+
+def _ensure_range(start_min: int, end_min: int, *, field_prefix: str, allow_equal: bool = False) -> None:
+    if start_min > end_min or (not allow_equal and start_min == end_min):
+        raise ValueError(f"{field_prefix}: start must be < end")
+
+
+def _validate_non_overlapping(ranges: List[Tuple[int, int]], *, field: str) -> None:
+    ranges_sorted = sorted(ranges, key=lambda x: x[0])
+    prev_end = -1
+    for s, e in ranges_sorted:
+        if s < prev_end:
+            raise ValueError(f"{field} has overlapping intervals")
+        prev_end = e
+
+
+def _ensure_int_in(v: Any, name: str, lo: int, hi: int) -> int:
     try:
-        tz = (current_app.config["TIMEZONE"] or os.getenv("TIMEZONE") or "Asia/Seoul").strip()
-    except RuntimeError:
-        tz = (os.getenv("TIMEZONE") or "Asia/Seoul").strip()
-    return tz or "Asia/Seoul"
+        i = int(v)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"{name} must be an integer") from e
+    if i < lo or i > hi:
+        raise ValueError(f"{name} must be in [{lo}..{hi}]")
+    return i
 
 
-def _parse_hhmm(s: str, *, field: str) -> int:
-    v = str(s or "").strip()
-    if not _HHMM_RE.match(v):
-        raise ValidationError("ERR_INVALID_PARAM", message="Invalid time format HH:MM.", field=field)
-    h, m = v.split(":")
-    return int(h) * 60 + int(m)
+def _ensure_slot_min(v: Any) -> int:
+    i = _ensure_int_in(v, "slot_min", 1, 24 * 60)
+    if i < 15 or (i % 5) != 0:
+        raise ValueError("slot_min must be >=15 and a multiple of 5")
+    return i
 
 
-def _fmt_hhmm(mins: int) -> str:
-    mins = max(0, min(24 * 60, int(mins)))
-    h, m = divmod(mins, 60)
-    return f"{h:02}:{m:02}"
-
-
-def _validate_range(start_min: int, end_min: int, *, field: str) -> None:
-    if not (0 <= start_min < 24 * 60) or not (0 < end_min <= 24 * 60) or not (start_min < end_min):
-        raise ValidationError("ERR_INVALID_PARAM", message="Invalid time range.", field=field)
-    
-
-def _weekday_py(d: _date) -> int:
-    # Python weekday: Mon=0..Sun=6
-    return int(d.weekday())
-
-
-def _maybe_alt_sum0(dow_py: int) -> int:
-    # When input rules assume Sun=0..Sat=6, convert from Python weekday
-    return (dow_py + 1) % 7
-
-
-@dataclass(frozen=True)
-class _Interval:
-    start_min: int
-    end_min: int
-    step_min: int   # slot_min
-
-    def clamp(self, a:int, b:int) -> Optional["_Interval"]:
-        s = max(self.start_min, a)
-        e = min(self.end_min, b)
-        if s >= e:
-            return None
-        return _Interval(s, e, self.step_min)
-    
-
-def _merge_intervals(intervals: Sequence[_Interval]) -> List[_Interval]:
-    if not intervals:
-        return []
-    arr = sorted(intervals, key=lambda x: (x.start_min, x.end_min, x.step_min))
-    out: List[_Interval] = []
-    cur = arr[0]
-    for it in arr[1:]:
-        if it.step_min == cur.step_min and it.start_min <= cur.end_min:
-            cur = _Interval(cur.start_min, max(cur.end_min, it.end_min), cur.step_min)
-        else:
-            out.append(cur)
-            cur = it
-    out.append(cur)
-    return out
-
-
-def _subtract(src: Sequence[_Interval], blocks: Sequence[Tuple[int, int]]) -> List[_Interval]:
-    # blocks: list of (start_min, end_min)
-    if not src or not blocks:
-        return list(src)
-    block_sorted = sorted(blocks)
-    res: List[_Interval] = []
-    for seg in src:
-        parts = [(seg.start_min, seg.end_min)]
-        for bs, be in block_sorted:
-            next_parts: List[Tuple[int, int]] = []
-            for ps, pe in parts:
-                if be <= ps or pe <= bs:
-                    next_parts.append((ps, pe))
-                else:
-                    if ps < bs:
-                        next_parts.append((ps, bs))
-                    if pe > be:
-                        next_parts.append((be, pe))
-            parts = next_parts
-            if not parts:
-                break
-        for ps, pe in parts:
-            if ps < pe:
-                res.append(_Interval(ps, pe, seg.step_min))
-    return res
-
-
-def _norm_breaks(breaks: Any, *, field: str) -> List[Tuple[int, int]]:
-    if breaks is None:
-        return []
-    if isinstance(breaks, Mapping):
-        breaks - [breaks]
-    if not isinstance(breaks, Iterable):
-        raise ValidationError("ERR_INVALID_PARAM", message="Invalid breaks.", field=field)
-    out: List[Tuple[int, int]] = []
-    for i, b in enumerate(breaks):
-        if not isinstance(b, Mapping):
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid break item.", field=f"{field}[{i}]")
-        s = _parse_hhmm(b.get("start"), field=f"{field}[{i}].start")
-        e = _parse_hhmm(b.get("end"), field=f"{field}[(i)].end")
-        _validate_range(s, e, field=f"{field}[{i}]")
-        out.append((s, e))
-    return out
-
-
-def _norm_dow_list(dow: Any, *, field: str) -> List[int]:
-    if isinstance(dow, int):
-        dow = [dow]
-    if not isinstance(dow, Iterable):
-        raise ValidationError("ERR_INVALID_PARAM", message="Invalid dow.", field=field)
+def _clean_dows(values: Any, *, field: str) -> List[int]:
+    if not isinstance(values, list):
+        raise ValueError(f"{field} must be a list")
     out: List[int] = []
     seen = set()
-    for i, v in enumerate(dow):
-        try:
-            dv = int(v)
-        except Exception:
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid dow item.", field=f"{field}[{i}]")
-        if dv < 0 or dv <6:
-            raise ValidationError("ERR_INVALID_PARAM", message="Dow must be 0..6.", field=f"{field}[{i}]")
-        if dv not in seen:
-            seen.add(dv)
-            out.append(dv)
-    if not out:
-        raise ValidationError("ERR_INVALID_PARAM", message="dow required.", field=field)
+    for v in values:
+        i = _ensure_int_in(v, f"{field}[]", 0, 6)
+        if i not in seen:
+            out.append(i)
+            seen.add(i)
     return out
 
 
-def _norm_positive_int(v: Any, *, field: str, minimum: int = 1, maximum: int = 24 * 60) -> int:
+def _clean_services(values: Any) -> List[ObjectId]:
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError("services must be a list")
+    out: List[ObjectId] = []
+    for v in values:
+        oid = _coerce_id(v)
+        if oid is None:
+            raise ValueError("services[] must be ObjectId or hex string")
+        out.append(oid)
+    return out
+
+
+def _clean_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(rule, dict):
+        raise ValueError("rule must be an object")
+    dows = _clean_dows(rule.get("dow", []), field="rule.dow")
+    if not dows:
+        raise ValueError("rule.dow must not be empty")
+    start_min = _parse_hhmm(rule.get("start"), field="rule.start")
+    end_min = _parse_hhmm(rule.get("end"), field="rule.end")
+    _ensure_range(start_min, end_min, field_prefix="rule.time")
+    slot_min = _ensure_slot_min(rule.get("slot_min"))
+    brk = rule.get("break") or []
+    if not isinstance(brk, list):
+        raise ValueError("rule.break must be a list")
+    brk_ranges: List[Tuple[int, int]] = []
+    cleaned_break: List[Dict[str, str]] = []
+    for idx, item in enumerate(brk):
+        if not isinstance(item, dict):
+            raise ValueError("rule.break[] must be objects")
+        bs = _parse_hhmm(item.get("start"), field=f"rule.break[{idx}].start")
+        be = _parse_hhmm(item.get("end"), field=f"rule.break[{idx}].end")
+        _ensure_range(bs, be, field_prefix=f"rule.break[{idx}]")
+        if bs < start_min or be > end_min:
+            raise ValueError("rule.break[] must lie within rule start/end")
+        brk_ranges.append((bs, be))
+        cleaned_break.append({"start": _minutes_to_hhmm(bs), "end": _minutes_to_hhmm(be)})
+    _validate_non_overlapping(brk_ranges, field="rule.break")
+    services = _clean_services(rule.get("services"))
+    return {
+        "dow": dows,
+        "start": _minutes_to_hhmm(start_min),
+        "end": _minutes_to_hhmm(end_min),
+        "break": cleaned_break,
+        "slot_min": slot_min,
+        "services": services,
+    }
+
+
+def _clean_exception(exc: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(exc, dict):
+        raise ValueError("exception must be an object")
+    date = exc.get("date")
+    if not isinstance(date, str) or not _DATE_RE.fullmatch(date):
+        raise ValueError("exception.date must be YYYY-MM-DD")
     try:
-        iv = int(v)
-    except Exception:
-        raise ValidationError("ERR_INVALID_PARAM", message="Invalid integer.", field=field)
-    if iv < minimum or iv > maximum:
-        raise ValidationError("ERR_INVALID_PARAM", message=f"Out of range {minimum}..{maximum}.", field=field)
-    return iv
+        datetime.strptime(date, "%Y-%m-%d")
+    except Exception as e:  # noqa: BLE001
+        raise ValueError("exception.date invalid") from e
+    is_closed = bool(exc.get("is_closed", False))
+    blocks = exc.get("blocks") or []
+    if not isinstance(blocks, list):
+        raise ValueError("exception.blocks must be a list")
+    blk_ranges: List[Tuple[int, int]] = []
+    cleaned_blocks: List[Dict[str, str]] = []
+    for idx, item in enumerate(blocks):
+        if not isinstance(item, dict):
+            raise ValueError("exception.blocks[] must be objects")
+        bs = _parse_hhmm(item.get("start"), field=f"exception.blocks[{idx}].start")
+        be = _parse_hhmm(item.get("end"), field=f"exception.blocks[{idx}].end")
+        _ensure_range(bs, be, field_prefix=f"exception.blocks[{idx}]")
+        if bs < 0 or be > 24 * 60:
+            raise ValueError("exception.blocks[] must lie within a day")
+        blk_ranges.append((bs, be))
+        cleaned_blocks.append({"start": _minutes_to_hhmm(bs), "end": _minutes_to_hhmm(be)})
+    _validate_non_overlapping(blk_ranges, field="exception.blocks")
+    return {"date": date, "is_closed": is_closed, "blocks": cleaned_blocks}
 
 
-def _norm_rules(rules: Any) -> List[Dict[str, Any]]:
-    if rules is None:
-        return []
-    if not isinstance(rules, Iterable):
-        raise ValidationError("ERR_INVALID_PARAM", message="Invalid rules.", field="rules")
-    out: List[Dict[str, Any]] = []
-    for idx, r in enumerate(rules):
-        if not isinstance(r, Mapping):
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid rule.", field=f"rules[{idx}]")
-        start = _parse_hhmm(r.get("start"), field=f"rules[{idx}].start")
-        end = _parse_hhmm(r.get("end"), field=f"rules[{idx}].end")
-        _validate_range(start, end, field=f"rules[{idx}]")
-        dow = _norm_dow_list(r.get("dow", []), field=f"rules[{idx}].dow")
-        slot_min = _norm_positive_int(r.get("slot_min", 60), field=f"rules[{idx}].slot_min", minimum=1, maximum=24*60)
-        br = r.get("break") if "break" in r else r.get("breaks")
-        breaks = _norm_breaks(br, field=f"rules[{idx}].break")
-        out.append(
-            {
-                "dow": dow,
-                "start": _fmt_hhmm(start),
-                "end": _fmt_hhmm(end),
-                "breaks": [{"start": _fmt_hhmm(s), "end": _fmt_hhmm(e)} for s, e, in breaks],
-                "slot_min": slot_min
-            }
-        )
-    return out
+class Availability(BaseModel):
+    __collection__ = "availability"
 
+    rules: List[Dict[str, Any]]
+    exceptions: List[Dict[str, Any]]
+    base_days: List[int]
 
-def _norm_exceptions(exceptions: Any) -> List[Dict[str, Any]]:
-    if exceptions is None:
-        return []
-    if not isinstance(exceptions, Iterable):
-        raise ValidationError("ERR_INVALID_PARAM", message="Invalid exceptions.", field="exceptions")
-    out: List[Dict[str, Any]] = []
-    for idx, ex in enumerate(ex, Mapping):
-        if not isinstance(ex, Mapping):
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid exception.", field=f"exceptions[{idx}]")
-        ds = str(ex.get("date") or "").strip()
-        try:
-            y, m, d = [int(x) for x in ds.split("-")]
-            _date(year=y, month=m, day=d)
-        except Exception:
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid date YYYY-MM-DD.", field=f"exceptions[{idx}]")
-        is_closed = bool(ex.get("is_closed", False))
-        blocks = _norm_breaks(ex.get("blocks"), field=f"exceptions[{idx}].blocks")
-        out.append({"date":ds, "is_closed": is_closed, "blocks": [{"start": _fmt_hhmm(s), "end": _fmt_hhmm(e)} for s, e in blocks]})
-    return out
-
-
-def _local_to_utc_iso(ds: str, minutes: int, tzname: Optional[str])-> str:
-    tz = ZoneInfo(tzname or _cfg_tz())
-    y, m, d = [int(x) for x in ds.split("-")]
-    dt_local = datetime(y, m, d, minutes // 60, minutes % 60, tzinfo=tz)
-    return dt_local.astimezone(ZoneInfo("UTC")).isoformat()
-
-
-class Availability(BaseDocument):
-    collection_name = "availability"
-
-    @classmethod
-    def default_indexes(cls) ->Tuple[IndexDef, ...]:
-        return (
-            IndexDef([("rules.dow", ASCENDING)], name="avail_rules_dow"),
-            IndexDef([("exceptions.date", ASCENDING)], name="avail_ex_date", unique=True, sparse=True),
-            IndexDef([("updated_at", DESCENDING)], name="avail_updated_at")
-        )
-    
-    # --------- CRUD & mutate ---------
-    @classmethod
-    def create_availability(cls, payload: Mapping[str, Any], session: Any = None) -> Dict[str, Any]:
-        if not isinstance(payload, Mapping):
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid payload.", field="body")
-        rules = _norm_rules(payload.get("rules"))
-        exceptions = _norm_exceptions(payload.get("exceptions"))
-        doc: MutableMapping[str, Any] = {"rules": rules, "exceptions": exceptions}
-        return cls.create(doc, session=session)
-    
-    @classmethod
-    def update_availability(cls, avail_id: Any, changes: Mapping[str, Any], *, session: Any = None) -> Dict[str, Any]:
-        if not isinstance(changes, Mapping):
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid changes.", field="body")
-        updates: Dict[str, Any] = {}
-        if "rules" in changes:
-            updates["rules"] = _norm_rules(changes.get("rules"))
-        if "exceptions" in changes:
-            updates["exceptions"] = _norm_exceptions(changes.get("exceptions"))
-        if not updates:
-            return cls.find_by_id(avail_id, session=session)
-        return cls.update_by_id(avail_id, updates, session=session)
-    
-    # --------- Query helpers ---------
-    @classmethod
-    def _pick_rules_for_date(cls, rules: Sequence[Mapping[str, Any]], d: _date) -> List[Mapping[str, Any]]:
-        if not rules:
-            return []
-        wd_py = _weekday_py(d)
-        wd_alt = _maybe_alt_sum0(wd_py)
-        picked_py = [r for r in rules if any(int(x) == wd_py for x in r.get("dow", []))]
-        if picked_py:
-            return picked_py
-        picked_alt = [r for r in rules if any(int(x) == wd_alt for x in r.get("dow", []))]
-        return picked_alt
-    
-    @classmethod
-    def _exception_for_date(cls, exceptions: Sequence[Mapping[str, Any]], ds: _date) -> Optional[Mapping[str, Any]]:
-        for ex in exceptions or []:
-            if str(ex.get("date")) == ds:
-                return ex
-        return None
-    
-    # --------- Slot generation ---------
-    @classmethod
-    def compute_slots(
-        cls,
-        schedule: Mapping[str, Any],
-        date_str: str,
-        duration_min: int,
+    def __init__(
+        self,
         *,
-        tzname: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Given a schedule document: {"rules": [...], "exceptions": [...]}, produce available slot list for the date.
-        Each slot ensures [start, start+duration] fits into available intervals considering breaks/blocks.
-        """
-        try:
-            y, m, d = [int(x) for x in str(date_str).split("-")]
-            day = _date(year=y, month=m, day=d)
-        except Exception:
-            raise ValidationError("ERR_INVALID_PARAM", message="Invalid date YYYY-MM-DD", field="date")
-        duration = _norm_positive_int(duration_min, field="duration_min", minimum=5, maximum=24 * 60)
-        
-        rules = _norm_rules(schedule.get("rules"))
-        exceptions = _norm_exceptions(schedule.get("exceptions"))
+        id: ObjectId | str | None = None,
+        rules: List[Dict[str, Any]] | None = None,
+        exceptions: List[Dict[str, Any]] | None = None,
+        base_days: List[int] | None = None,
+        created_at: Any | None = None,
+        updated_at: Any | None = None,
+    ) -> None:
+        super().__init__(id=id, created_at=created_at, updated_at=updated_at)
+        self.rules = [ _clean_rule(r) for r in (rules or []) ]
+        self.exceptions = [ _clean_exception(e) for e in (exceptions or []) ]
+        self.base_days = _clean_dows(base_days or [], field="base_days")
 
-        # Pick rules by day-of-week; allow both mappings
-        day_rules = cls._pick_rules_for_date(rules, day)
-        if not day_rules:
-            return []
-        
-        # Build intervals from rules minus rule-level breaks
-        intervals: List[_Interval] = []
-        for r in day_rules:
-            s = _parse_hhmm(r["start"], field="rules[].start")
-            e = _parse_hhmm(r["end"], field="rules[].end")
-            _validate_range(s, e, field="rules[]")
-            step = _norm_positive_int(r.get("slot_min", 60), field="rules[].slot_min", minimum=5)
-            base = [_Interval(s, e, step)]
-            r_breaks = [(_parse_hhmm(b["start"], field="rules[].break.start"), 
-                         _parse_hhmm(b["end"], field="rules[].break.end")) for b in (r.get("breaks") or [])]
-            base = _subtract(base, r_breaks)
-            intervals.extend(base)
+    def to_dict(self, exclude_none: bool = True) -> Dict[str, Any]:
+        base = super().to_dict(exclude_none=exclude_none)
 
-        # Merge same-step overallping intervals
-        intervals = _merge_intervals(intervals)
-    
-        # Apply exception (full-day closed or blocks)
-        ex = cls._exception_for_date(exceptions, date_str)
-        if ex and ex.get("is_closed"):
-            return []
-        ex_blocks: List[Tuple[int, int]] = []
-        if ex:
-            for b in ex.get("blocks") or []:
-                ex_blocks.append((_parse_hhmm(b["start"], field="exceptions[].blocks.start"),
-                                  _parse_hhmm(b["end"], field="exceptions[].blocks.end")))
-                if ex_blocks:
-                    intervals = _subtract(intervals, ex_blocks)
-                    intervals = _merge_intervals(intervals)
-                    if not intervals:
-                        return []
-                    
-        # Generate slots by step per interval
-        slots: List[Dict[str, Any]] = []
-        for iv in intervals:
-            last_start = iv.end_min - duration
-            if last_start < iv.start_min:
-                continue
-            cur = iv.start_min
-            step = iv.step_min
-            # Align start ot step from interval start
-            while cur <= last_start:
-                start_local = _fmt_hhmm(cur)
-                end_local = _fmt_hhmm(cur + duration)
-                slots.append(
-                    {
-                        "start_local": start_local,
-                        "end_local": end_local,
-                        "start": _local_to_utc_iso(date_str, cur, tzname),
-                        "end": _local_to_utc_iso(date_str, cur + duration, tzname)
-                    }
-                )
-                cur += step
-            
-        return slots
-    
-    @classmethod
-    def compute_slots_by_id(
-        cls, avil_id: Any, date_str: str, duration_min: int, *, tzname: Optional[str] = None, session: Any = None
-    ) -> List[Dict[str, Any]]:
-        doc = cls.find_by_id(avil_id, session=session)
-        if not doc:
-            return []
-        return cls.compute_slots_from_doc(doc, date_str, duration_min, tzname=tzname)
-    
-    @classmethod
-    def compute_slots_latest(
-        cls, date_str: str, duration_min: int, *, tzname: Optional[str] = None, session: Any = None
-    ) -> List[Dict[str, Any]]:
-        doc = cls.find_one({}, sort=[("updated_at", DESCENDING)], session=session) or {}
-        return cls.compute_slots(doc, date_str, duration_min, tzname=tzname)
-        
-    # --------- Convenience setters ---------
-    @classmethod
-    def set_rules(cls, avail_id: Any, rules: Iterable[Mapping[str, Any]], *, session: Any = None) -> Optional[Dict[str, Any]]:
-        return cls.update_by_id(avail_id, {"rules": _norm_rules(rules)}, session=session)
-    
-    @classmethod
-    def set_exceptions(cls, avil_id: Any, exceptions: Iterable[Mapping[str, Any]], *, session: Any = None) -> Optional[Dict[str, Any]]:
-        return cls.update_by_id(avil_id, {"exceptions": _norm_exceptions(exceptions)}, session=session)
-    
+        def _serialize_rule(r: Dict[str, Any]) -> Dict[str, Any]:
+            services = r.get("services") or []
+            svc_out = [str(s) if isinstance(s, ObjectId) else str(s) for s in services]
+            return {
+                "dow": list(r["dow"]),
+                "start": r["start"],
+                "end": r["end"],
+                "break": list(r["break"]),
+                "slot_min": r["slot_min"],
+                "services": svc_out if services else [],
+            }
 
-__all__ = ["Availability"]
+        out: Dict[str, Any] = {
+            **base,
+            "rules": [_serialize_rule(r) for r in self.rules],
+            "exceptions": [dict(e) for e in self.exceptions],
+            "base_days": list(self.base_days),
+        }
+        if exclude_none:
+            out = {k: v for k, v in out.items() if v is not None}
+        return out
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Availability":
+        obj: "Availability" = cls.__new__(cls)  # type: ignore[call-arg]
+        setattr(obj, "id", _coerce_id(d.get("_id", d.get("id"))))
+        setattr(obj, "created_at", _coerce_dt(d.get("created_at")))
+        setattr(obj, "updated_at", _coerce_dt(d.get("updated_at"), getattr(obj, "created_at")))
+        rules = d.get("rules") or []
+        exceptions = d.get("exceptions") or []
+        base_days = d.get("base_days") or []
+        setattr(obj, "rules", [_clean_rule(r) for r in rules])
+        setattr(obj, "exceptions", [_clean_exception(e) for e in exceptions])
+        setattr(obj, "base_days", _clean_dows(base_days, field="base_days"))
+        return obj
