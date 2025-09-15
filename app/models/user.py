@@ -1,232 +1,166 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from bson import ObjectId
+from pymongo import ASCENDING, IndexModel
+from pymongo.collection import Collection
+from pymongo.database import Database
 
-from app.core.constants import DEFAULT_LANG
-from app.models.base import BaseModel, _coerce_dt, _coerce_id
-from app.utils.phone import normalize_kr
+from app.core.constants import LANG_KO, SUPPORTED_LANGS, UserRole
+from app.models.base import BaseModel
+from app.utils.phone import normalize_kr as normalize_phone
+
+UTC = timezone.utc
+COLLECTION = "users"
+
+__all__ = [
+    "COLLECTION",
+    "ensure_indexes",
+    "get_collection",
+    "User",
+]
 
 
-_ALLOWED_ROLES = {"customer", "admin"}
-_ALLOWED_LANGS = {"ko", 'en'}
+def get_collection(db: Database) -> Collection:
+    return db[COLLECTION]
 
 
-def _norm_email(v: Optional[str]) -> Optional[str]:
+def ensure_indexes(db: Database) -> None:
+    col = get_collection(db)
+    col.create_indexes(
+        [
+            IndexModel([("email", ASCENDING)], name="uniq_email", unique=True, partialFilterExpression={"email": {"$type": "string"}}),
+            IndexModel([("phone", ASCENDING)], name="uniq_phone", unique=True, partialFilterExpression={"phone": {"$type": "string"}}),
+            IndexModel([("name", ASCENDING)], name="idx_name"),
+        ]
+    )
+
+
+def _iso_to_utc(v: Any) -> datetime:
     if v is None:
+        return v
+    if isinstance(v, datetime):
+        return v.replace(tzinfo=UTC) if v.tzinfo is None else v.astimezone(UTC)
+    s = str(v).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def _norm_email(email: Optional[str]) -> Optional[str]:
+    if email is None:
         return None
-    s = v.strip().lower()
-    if not s:
-        return None
-    if "@" not in s:
-        raise ValueError("invalid email")
-    return s
+    e = email.strip().lower()
+    return e or None
 
 
-def _norm_phone(v: Optional[str]) -> Optional[str]:
-    if v is None:
-        return None
-    s = v.strip()
-    if not s:
-        return None
-    return normalize_kr(s)
+def _norm_lang(lang: Optional[str]) -> str:
+    l = (lang or "").strip().lower()
+    return l if l in SUPPORTED_LANGS else LANG_KO
 
 
-def _bool(v: Any, default: bool = False) -> bool:
-    if v is None:
-        return default
-    return bool(v)
-
-
-@dataclass
-class _EmailChannel:
-    enabled: bool = False
-    verified_at: Optional[Any] = None   # datetime | str | None accepted for input
-
-
-@dataclass
-class _BoolChannel:
-    enabled: bool = False
+def _norm_channels(ch: Optional[dict]) -> dict:
+    base = {
+        "email": {"enabled": False},
+        "sms": {"enabled": False},
+        "kakao": {"enabled": False},
+    }
+    if not isinstance(ch, dict):
+        return base
+    out = dict(base)
+    for k in ("email", "sms", "kakao"):
+        v = ch.get(k, {})
+        if isinstance(v, dict):
+            enabled = bool(v.get("enabled", False))
+            out[k] = {"enabled": enabled}
+            if k == "email" and v.get("verified_at") is not None:
+                out[k]["verified_at"] = _iso_to_utc(v.get("verified_at"))
+    return out
 
 
 class User(BaseModel):
-    __collection__ = "users"
+    def __init__(self, doc: Optional[dict[str, Any]] = None):
+        super().__init__(doc or {})
 
-    # fields 
-    role: str
-    name: Optional[str]
-    email: Optional[str]
-    phone: Optional[str]
-    lang_pref: str
-    channels: Dict[str, Any]
-    consents: Dict[str, Any]
-    is_active: bool
-    last_login_at: Optional[Any]
+    @staticmethod
+    def prepare_new(payload: dict[str, Any]) -> dict[str, Any]:
+        doc: dict[str, Any] = {}
 
-    def __init__(
-        self,
-        *,
-        id: ObjectId | str | None = None,
-        role: str = "customer",
-        name: str | None = None,
-        email: str | None = None,
-        phone: str | None = None,
-        lang_pref: str | None = None,
-        channels: Dict[str, Any] | None = None,
-        consents: Dict[str, Any] | None = None,
-        is_active: bool = True,
-        last_login_at: Any | None = None,   # datetime | str | None
-        created_at: Any | None = None,
-        updated_at: Any | None = None
-    ) -> None:
-        super().__init__(id=id, created_at=created_at, updated_at=updated_at)
+        _id = payload.get("_id") or payload.get("id")
+        if _id:
+            doc["_id"] = ObjectId(str(_id)) if not isinstance(_id, ObjectId) else _id
 
-        # role
-        r = (role or "customer").strip().lower()
-        if r not in _ALLOWED_ROLES:
-            raise ValueError("invalid role")
-        self.role = r
+        name = (payload.get("name") or "").strip()
+        if name:
+            doc["name"] = name
 
-        # basics
-        self.name = (name or "").strip() or None
-        self.email = _norm_email(email)
-        self.phone = _norm_phone(phone)
+        email = _norm_email(payload.get("email"))
+        if email:
+            doc["email"] = email
 
-        # language (fallback to DEFAULT_LANG, KO if unknown)
-        lp = (lang_pref or DEFAULT_LANG or "ko").strip().lower()
-        self.lang_pref = lp if lp in _ALLOWED_LANGS else "ko"
+        phone = payload.get("phone")
+        if phone:
+            doc["phone"] = normalize_phone(str(콜))
 
-        # channels (default disabled)
-        email_ch = _EmailChannel()
-        sms_ch = _BoolChannel()
-        kakao_ch = _BoolChannel()
-        if isinstance(channels, dict):
-            e = channels.get("email")
-            s = channels.get("sms")
-            k = channels.get("kakao") or {}
-            email_ch.enabled = _bool(e.get("enabled"), False)
-            email_ch.verified_at = e.get("verified_at")
-            sms_ch.enabled = _bool(s.get("enabled"), False)
-            kakao_ch.enabled = _bool(k.get("enabled"), False)
-        self.channels = {
-            "email": {"enabled": email_ch.enabled, "verfied_at": _coerce_dt(email_ch.verified_at)},
-            "sms": {"enabled": sms_ch.enabled},
-            "kakao": {"enabled": kakao_ch.enabled}
-        }
+        role = str(payload.get("role") or UserRole.CUSTOMER)
+        doc["role"] = role if role in (UserRole.CUSTOMER, UserRole.ADMIN) else UserRole.CUSTOMER
 
-        # consents (timestamps optional)
-        c = consents or {}
-        self.consents = {
-            "tos_at": c.get("tos_at"),
-            "privacy_at": c.get("privacy_at")
-        }
+        doc["lang_pref"] = _norm_lang(payload.get("lang_pref"))
 
-        self.is_active = bool(is_active)
-        self.last_login_at = last_login_at
+        doc["channels"] = _norm_channels(payload.get("channels"))
 
-    # --- serialization ---
+        consents = payload.get("consents") or {}
+        c_out: dict[str, Any] = {}
+        if consents.get("tos_at"):
+            c_out["tos_at"] = _iso_to_utc(consents.get("tos_at"))
+        if consents.get("privacy_at"):
+            c_out["privacy_at"] = _iso_to_utc(consents.get("privacy_at"))
+        if c_out:
+            doc["consents"] = c_out
 
-    def to_dict(self, exclude_none: bool = True) -> Dict[str, Any]:
-        base = super().to_dict(exclude_none=exclude_none)
-        out: Dict[str, Any] = {
-            **base,
-            "role": self.role,
-            "name": self.name,
-            "email": self.email,
-            "phone": self.phone,
-            "lang_pref": self.lang_pref,
-            "channels": {
-                "email": {
-                    "enabled": bool(self.channels.get("email", {}).get("enabled", False)),
-                    "verified_at": self.channels.get("kakao", {}).get("verified_at")
-                },
-                "sms": {"enabled": bool(self.channels.get("sms", {}).get("enabled", False))},
-                "kakao": {"enabled": bool(self.channels.get("kakao", {}).get("enabled", False))}
-            },
-            "consents": {
-                "tos_at": self.consents.get("tos_at"),
-                "privacy_at": self.consents.get("privacy_at")
-            },
-            "is_active": self.is_active,
-            "last_login_at": self.last_login_at
-        }
-        if exclude_none:
-            # Strip None values shallowly
-            out = {k: v for k, v in out.items() if v is not None}
-            # Keep nested Nones (timestamps) as-is; API layer will render ISO if present
-        return out
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "User":
-        obj: "User" = cls.__new__(cls)  # type: ignore[call-arg]
-        # id & timestamps
-        setattr(obj, "id", _coerce_id(d.get("_id", d.get("id"))))
-        setattr(obj, "created_at", _coerce_dt(d.get("created_at")))
-        setattr(obj, "updated_at", _coerce_dt(d.get("updated_at"), getattr(obj, "created_at")))
+        if payload.get("last_login_at"):
+            doc["last_login_at"] = _iso_to_utc(payload.get("last_login_at"))
 
-        # core fields
-        role = (d.get("role") or "customer").strip().lower()
-        if role not in _ALLOWED_ROLES:
-            role = "customer"
-        setattr(obj, "role", role)
-        setattr(obj, "name", (d.get("name") or "").strip() or None)
-        setattr(obj, "email", _norm_email(d.get("email")))
-        setattr(obj, "phone", _norm_phone(d.get("phone")))
-        lp = (d.get("lang_pref") or DEFAULT_LANG or "ko").strip().lower()
-        setattr(obj, "lang_pref", lp if lp in _ALLOWED_LANGS else "ko")
+        doc["is_active"] = bool(payload.get("is_active", True))
 
-        # channels
-        ch = d.get("channels") or {}
-        email_ch = ch.get("email") or {}
-        sms_ch = ch.get("sms") or {}
-        kakao_ch = ch.get("kakao") or {}
-        setattr(
-            obl,
-            "channels",
-            {
-                "email": {
-                    "enabled": _bool(email_ch.get("enabled"), False),
-                    "verified_at": email_ch.get("verified_at")
-                },
-                "sms": {"enabled": _bool(sms_ch.get("enabled"), False)},
-                "kakao": {"enabled": _bool(kakao_ch.get("enabled"), False)}
-            },
-        )
+        return User.stamp_new(doc)
 
-        # consents
-        cons = d.get("consents") or {}
-        setattr(
-            obj, 
-            "consents",
-            {
-                "tos_at": cons.get("tos_at"),
-                "privacy_at": cons.get("privacy_at")
-            }
-        )
-
-        # flags & last login
-        setattr(obj, "is_active", _bool(d.get("is_active"), True))
-        setattr(obj, "last_login_at", _bool(d.get("last_login_at")))
-
-        return obj
-    
-    # --- utilities ---
-
-    def normalize_identity(self) -> None:
-        self.email = _norm_email(self.email)
-        self.phone = _norm_phone(self.phone)
-        lp = (self.lang_pref or DEFAULT_LANG or "ko").strip().lower()
-        self.lang_pref = lp if lp in _ALLOWED_LANGS else "ko"
-
-    @classmethod
-    def indexes(cls) -> list[Dict[str, Any]]:
-        """
-        Index specifications consumed by scripts/create_indexes.py.
-        """
-        return [
-            {"keys": [("email", 1)], "unique": True, "sparse": True, "name": "ux_users_email"},
-            {"keys": [("phone", 1)], "name": "ix_users_phone"},
-            {"keys": [("name", 1)], "name": "ix_users_name"}
-        ]
+    @staticmethod
+    def prepare_update(partial: dict[str, Any]) -> dict[str, Any]:
+        upd: dict[str, Any] = {}
+        if "name" in partial:
+            upd["name"] = (partial.get("name") or "").strip()
+        if "email" in partial:
+            e = _norm_email(partial.get("email"))
+            if e is not None:
+                upd["email"] = e
+            else:
+                upd.pop("email", None)
+        if "phone" in partial:
+            p = partial.get("phone")
+            if p:
+                upd["phone"] = normalize_phone(str(p))
+        if "role" in partial:
+            r = str(partial.get("role") or "").strip()
+            if r in (UserRole.CUSTOMER, UserRole.ADMIN):
+                upd["role"] = r
+        if "lang_pref" in partial:
+            upd["lang_pref"] = _norm_lang(partial.get("lang_pref"))
+        if "channels" in partial:
+            upd["channels"] = _norm_channels(partial.get("channels"))
+        if "consents" in partial:
+            consents = partial.get("consents") or {}
+            c_out: dict[str, Any] = {}
+            if "tos_at" in consents and consents.get("tos_at") is not None:
+                c_out["tos_at"] = _iso_to_utc(consents.get("tos_at"))
+            if "privacy_at" in consents and consents.get("privacy_at") is not None:
+                c_out["privacy_at"] = _iso_to_utc(consents.get("privacy_at"))
+            upd["consents"] = c_out
+        if "last_login_at" in partial and partial.get("last_login_at") is not None:
+            upd["last_login_at"] = _iso_to_utc(partial.get("last_login_at"))
+        if "is_active" in partial:
+            upd["is_active"] = bool(partial.get("is_active"))
+        return User.stamp_update(upd)

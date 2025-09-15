@@ -1,185 +1,211 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from functools import lru_cache
-from typing import FrozenSet, List, Literal
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence
+from zoneinfo import ZoneInfo
 
-from app.core.constants import (
-    CSP_ENABLE,
-    DEFAULT_LANG,
-    RATE_LIMIT_PER_MIN,
-    TZ_NAME,
-    UPLOAD_ALLOWED_EXTS,
-    UPLOAD_MAX_SIZE_MB,
-    Channel
-)
-
-# --- helpers ---
+from app.core.constants import SUPPORTED_LANGS, KST_TZ, LANG_KO
 
 
-def _get_env(name: str, default: str | None = None, required: bool = False) -> str:
-    val = os.getenv(name, default if default is not None else "")
-    if required and not val:
-        raise ValueError(f"ERR_INVALID_PAYLOAD: missing evn `{name}`")
-    return val
-
-
-def _get_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
+def _getenv(key: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(key)
+    if v is None or v == "":
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get_int(name: str, default: int, minimum: int | None = None) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        val = int(raw)
-    except ValueError:
-        raise ValueError(f"ERR_INVALID_PAYLOAD: invalid int for `{name}`")
-    if minimum is not None and val < minimum:
-        raise ValueError(f'ERR_INVALID_PAYLOAD: `{name}` must be >= {minimum}')
     return v
 
 
-def _get_list(name: str, default: str = "", sep: str = ",") -> List[str]:
-    raw = os.getenv(name, default)
-    if not raw.strip():
-        return []
-    return [x.strip() for x in raw.split(sep) if x.strip()]
+def _getenv_int(key: str, default: int) -> int:
+    v = _getenv(key)
+    try:
+        return int(v) if v is not None else default
+    except Exception:
+        return default
 
 
-def _parse_channels(name: str) -> List[Channel]:
-    items = [x.lower() for x in _get_list(name)]
-    allowed = {e.value for e in Channel}
-    for x in items:
-        if x not in allowed:
-            raise ValueError(f"ERR_INVALID_PAYLOAD: `{name} contains invalid channel `{x}``")
-    # cast to enum list
-    return [Channel(x) for x in items]
+def _getenv_bool(key: str, default: bool) -> bool:
+    v = (_getenv(key) or "").strip().lower()
+    if v in ("1", "true", "yes", "y", "on"):
+        return True
+    if v in ("0", "false", "no", "n", "off"):
+        return False
+    return default
 
 
-def _validate_url(name: str, value: str) -> str:
-    if not (value.startswith("http://") or value.startswith("http://")):
-        raise ValueError(f"ERR_INVALID_PAYLOAD: `{name}` must start with http:// or https://")
-    return value
+def _getenv_csv(key: str, default: Sequence[str] | None = None) -> List[str]:
+    v = _getenv(key)
+    if not v:
+        return list(default or [])
+    return [x.strip() for x in v.split(",") if x.strip()]
 
 
-# --- settings dataclass ---
+def _validate_timezone(tz: str) -> str:
+    try:
+        ZoneInfo(tz)
+        return tz
+    except Exception:
+        return KST_TZ
 
 
-InventoryPolicy = Literal["hold", "deduct_on_paid"]
+def _one_of(value: str, allowed: Sequence[str], fallback: str) -> str:
+    return value if value in allowed else fallback
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True)
 class Settings:
     # Required
     MONGO_URL: str
     SECRET_KEY: str
-    BASE_URL: str
 
-    # Locale / Timezone
-    TIMEZONE: str
-    DEFAULT_LANG: str
+    # App
+    TIMEZONE: str = field(default=KST_TZ)  # display KST, internal UTC
+    BASE_URL: Optional[str] = field(default=None)
+    DEFAULT_LANG: str = field(default=LANG_KO)
+    ALLOWED_ORIGINS: List[str] = field(default_factory=list)
 
-    # CORS / Security
-    ALLOWED_ORIGINS: List[str]
-    CSP_ENABLE: bool
-    RATE_LIMIT_PER_MIN: int
+    # Mail
+    SMTP_HOST: Optional[str] = field(default=None)
+    SMTP_PORT: Optional[int] = field(default=None)
+    SMTP_USER: Optional[str] = field(default=None)
+    SMTP_PASS: Optional[str] = field(default=None)
+    SMTP_FROM: Optional[str] = field(default=None)
 
-    # SMTP (optional but commonly set)
-    SMTP_HOST: str
-    SMTP_PORT: int
-    SMTP_USER: str
-    SMTP_PASS: str
-    SMTP_FROM: str
+    # Naver Map
+    NAVER_MAP_CLIENT_ID: Optional[str] = field(default=None)
+    NAVER_MAP_CLIENT_SECRET: Optional[str] = field(default=None)
 
-    # Naver Map (server-injected; optional in local)
-    NAVER_MAP_CLIENT_ID: str | None
-    NAVER_MAP_CLIENT_SECRET: str | None
-
-    # Booking / Orders Policies
-    REMINDER_BEFORE_HOURS: int
-    ORDER_EXPIRE_HOURS: int 
-    INVENTORY_POLICY: InventoryPolicy
+    # Business Policies (defaults fixed by spec)
+    REMINDER_BEFORE_HOURS: int = field(default=24)
+    ORDER_EXPIRE_HOURS: int = field(default=48)
+    INVENTORY_POLICY: str = field(default="hold")  # hold|deduct_on_paid
 
     # Uploads
-    UPLOAD_MAX_SIZE_MB: int
-    UPLOAD_ALLOWED_EXTS: FrozenSet[str]
+    UPLOAD_MAX_SIZE_MB: int = field(default=10)
+    UPLOAD_ALLOWED_EXTS: List[str] = field(default_factory=lambda: ["jpg", "jpeg", "png", "webp", "pdf"])
 
-    # Alerts
-    ALERT_CHANNELS: List[Channel]
+    # Alerts / Limits / CSP
+    ALERT_CHANNELS: List[str] = field(default_factory=lambda: ["email", "sms", "kakao"])
+    RATE_LIMIT_PER_MIN: int = field(default=60)
+    CSP_ENABLE: bool = field(default=True)
+
+    # Runtime mode helpers
+    ENV: str = field(default_factory=lambda: _getenv("ENV", _getenv("FLASK_ENV", "production")) or "production")
+    DEBUG: bool = field(default_factory=lambda: _getenv_bool("DEBUG", False))
+    TESTING: bool = field(default_factory=lambda: _getenv_bool("TESTING", False))
+
+    def as_dict(self) -> dict:
+        return {
+            "MONGO_URL": self.MONGO_URL,
+            "SECRET_KEY": "***" if self.SECRET_KEY else "",
+            "TIMEZONE": self.TIMEZONE,
+            "BASE_URL": self.BASE_URL,
+            "DEFAULT_LANG": self.DEFAULT_LANG,
+            "ALLOWED_ORIGINS": self.ALLOWED_ORIGINS,
+            "SMTP_HOST": self.SMTP_HOST,
+            "SMTP_PORT": self.SMTP_PORT,
+            "SMTP_FROM": self.SMTP_FROM,
+            "NAVER_MAP_CLIENT_ID": self.NAVER_MAP_CLIENT_ID,
+            "REMINDER_BEFORE_HOURS": self.REMINDER_BEFORE_HOURS,
+            "ORDER_EXPIRE_HOURS": self.ORDER_EXPIRE_HOURS,
+            "INVENTORY_POLICY": self.INVENTORY_POLICY,
+            "UPLOAD_MAX_SIZE_MB": self.UPLOAD_MAX_SIZE_MB,
+            "UPLOAD_ALLOWED_EXTS": self.UPLOAD_ALLOWED_EXTS,
+            "ALERT_CHANNELS": self.ALERT_CHANNELS,
+            "RATE_LIMIT_PER_MIN": self.RATE_LIMIT_PER_MIN,
+            "CSP_ENABLE": self.CSP_ENABLE,
+            "ENV": self.ENV,
+            "DEBUG": self.DEBUG,
+            "TESTING": self.TESTING,
+        }
+
+    @property
+    def is_production(self) -> bool:
+        return (self.ENV or "").lower() == "production"
+
+    @property
+    def is_development(self) -> bool:
+        return (self.ENV or "").lower() in ("development", "dev")
+
+    @property
+    def is_testing(self) -> bool:
+        return self.TESTING
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    # Requireds
-    mongo_url = _get_env("MONGO_URL", required=True)
-    secret_key = _get_env("SECRET_KEY", required=True)
-    base_url = _validate_url("BASE_URL", _get_env("BASE_URL", required=True))
+_SETTINGS: Optional[Settings] = None
 
-    # TZ / Lang (display only; storage is UTC)
-    timezone = _get_env("TIMEZONE", TZ_NAME)
-    default_lang = _get_env("DEFAULT_LANG", DEFAULT_LANG)
 
-    # CORS / Security
-    allowed_origins = _get_list("ALLOWED_ORIGINS")
-    csp_enable = CSP_ENABLE
-    rate_limit = _get_int("RATE_LIMIT_PER_MIN", RATE_LIMIT_PER_MIN, minimum=1)
+def _build_settings() -> Settings:
+    mongo_url = _getenv("MONGO_URL")
+    secret_key = _getenv("SECRET_KEY")
 
-    # SMTP (optional)
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = None
-    if os.getenv("STMP_PORT"):
-        smtp_port = _get_int("SMTP_PORT", 0, minimum=1)
-    smtp_uesr = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
-    smtp_from = os.getenv("SMTP_FROM")
+    if not mongo_url:
+        raise RuntimeError("Missing required environment variable: MONGO_URL")
+    if not secret_key:
+        raise RuntimeError("Missing required environment variable: SECRET_KEY")
 
-    # Naver Map (optional)
-    naver_id = os.getenv("NAVER_MAP_CLIENT_ID")
-    naver_secret = os.getenv("NAVER_MAP_CLIENT_SECRET")
+    timezone = _validate_timezone(_getenv("TIMEZONE", KST_TZ) or KST_TZ)
+    base_url = _getenv("BASE_URL")
 
-    # Policies
-    reminder_before = _get_int("REMIINDER_BEFORE_HOURS", 24, minimum=1)
-    expire_hours = _get_int("ORDER_EXPIRE_HOURS", 48, minimum=1)
-    policy_raw = _get_env("INVENTORY_POLICY", "hold").lower()
-    if policy_raw not in {"hold", "deduct_on_paid"}:
-        raise ValueError("ERR_INVALID_PAYLOAD: INVENTORY_POLICY must be `hold` or `deduct_on_paid`")
-    inventory_policy: InventoryPolicy = policy_raw  # type: ignore[assignment]
+    default_lang = _one_of((_getenv("DEFAULT_LANG", LANG_KO) or LANG_KO), SUPPORTED_LANGS, LANG_KO)
+    allowed_origins = _getenv_csv("ALLOWED_ORIGINS", [])
 
-    # Uploads (canonical from constants, already env-aware & validated)
-    upload_size_mb = UPLOAD_MAX_SIZE_MB
-    upload_exts = UPLOAD_ALLOWED_EXTS
+    smtp_host = _getenv("SMTP_HOST")
+    smtp_port = _getenv_int("SMTP_PORT", int(_getenv("SMTP_PORT") or 0)) if _getenv("SMTP_PORT") else None
+    smtp_user = _getenv("SMTP_USER")
+    smtp_pass = _getenv("SMTP_PASS")
+    smtp_from = _getenv("SMTP_FROM")
 
-    # Alerts
-    alert_channels = _parse_channels("ALERT_CHANNELS")
+    naver_id = _getenv("NAVER_MAP_CLIENT_ID")
+    naver_secret = _getenv("NAVER_MAP_CLIENT_SECRET")
+
+    reminder_before_hours = _getenv_int("REMINDER_BEFORE_HOURS", 24)
+    order_expire_hours = _getenv_int("ORDER_EXPIRE_HOURS", 48)
+    inventory_policy = _one_of((_getenv("INVENTORY_POLICY", "hold") or "hold"), ("hold", "deduct_on_paid"), "hold")
+
+    upload_max_size_mb = _getenv_int("UPLOAD_MAX_SIZE_MB", 10)
+    upload_allowed_exts = [e.lower() for e in _getenv_csv("UPLOAD_ALLOWED_EXTS", ["jpg", "jpeg", "png", "webp", "pdf"])]
+
+    alert_channels = [c for c in _getenv_csv("ALERT_CHANNELS", ["email", "sms", "kakao"]) if c in ("email", "sms", "kakao")]
+    if not alert_channels:
+        alert_channels = ["email", "sms", "kakao"]
+
+    rate_limit_per_min = _getenv_int("RATE_LIMIT_PER_MIN", 60)
+    csp_enable = _getenv_bool("CSP_ENABLE", True)
+
+    env = _getenv("ENV", _getenv("FLASK_ENV", "production")) or "production"
+    debug = _getenv_bool("DEBUG", False)
+    testing = _getenv_bool("TESTING", False)
 
     return Settings(
         MONGO_URL=mongo_url,
         SECRET_KEY=secret_key,
-        BASE_URL=base_url,
         TIMEZONE=timezone,
+        BASE_URL=base_url,
         DEFAULT_LANG=default_lang,
         ALLOWED_ORIGINS=allowed_origins,
-        CSP_ENABLE=csp_enable,
-        RATE_LIMIT_PER_MIN=rate_limit,
         SMTP_HOST=smtp_host,
         SMTP_PORT=smtp_port,
-        SMTP_USER=smtp_uesr,
+        SMTP_USER=smtp_user,
         SMTP_PASS=smtp_pass,
         SMTP_FROM=smtp_from,
         NAVER_MAP_CLIENT_ID=naver_id,
         NAVER_MAP_CLIENT_SECRET=naver_secret,
-        REMINDER_BEFORE_HOURS=reminder_before,
-        ORDER_EXPIRE_HOURS=expire_hours,
+        REMINDER_BEFORE_HOURS=reminder_before_hours,
+        ORDER_EXPIRE_HOURS=order_expire_hours,
         INVENTORY_POLICY=inventory_policy,
-        UPLOAD_MAX_SIZE_MB=upload_size_mb,
-        UPLOAD_ALLOWED_EXTS=upload_exts,
-        ALERT_CHANNELS=alert_channels
+        UPLOAD_MAX_SIZE_MB=upload_max_size_mb,
+        UPLOAD_ALLOWED_EXTS=upload_allowed_exts,
+        ALERT_CHANNELS=alert_channels,
+        RATE_LIMIT_PER_MIN=rate_limit_per_min,
+        CSP_ENABLE=csp_enable,
+        ENV=env,
+        DEBUG=debug,
+        TESTING=testing,
     )
 
 
+def get_settings(refresh: bool = False) -> Settings:
+    global _SETTINGS
+    if _SETTINGS is None or refresh:
+        _SETTINGS = _build_settings()
+    return _SETTINGS

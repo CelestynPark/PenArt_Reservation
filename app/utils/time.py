@@ -1,105 +1,127 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Tuple, Union
 from zoneinfo import ZoneInfo
 
-from app.core.constants import TZ_NAME
+from app.config import get_settings
+from app.core.constants import KST_TZ
 
+__all__ = (
+    "to_utc",
+    "to_kst",
+    "parse_kst_date",
+    "range_utc",
+    "iso",
+)
+
+# Cache timezones
+_SETTINGS = get_settings()
+LOCAL_TZ = ZoneInfo(_SETTINGS.TIMEZONE or KST_TZ)
 UTC = timezone.utc
-KST = ZoneInfo(TZ_NAME)  # Expect "Asia/Seoul"
 
 
-# --- helpers ---
-def _ensure_aware(dt: datetime) -> None:
-    if not isinstance(dt, datetime):
-        raise TypeError("expected datetime")
-    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-        raise ValueError("naive datetime is not allowed")
+def _is_date_str(s: str) -> bool:
+    return len(s) == 10 and s[4] == "-" and s[7] == "-"
 
 
-def now_utc() -> datetime:
-    return datetime.now(UTC)
+def _parse_iso_dt(s: str) -> datetime:
+    s = s.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        raise ValueError("Invalid datetime string")
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
-def utc_to_kst(dt_utc: datetime) -> datetime:
-    _ensure_aware(dt_utc)
-    return dt_utc.astimezone(KST)
+def _ensure_aware(dt: datetime, assume_tz: timezone | ZoneInfo) -> datetime:
+    return dt.replace(tzinfo=assume_tz) if dt.tzinfo is None else dt
 
 
-def kst_to_utc(dt_kst: datetime) -> datetime:
-    _ensure_aware(dt_kst)
-    return dt_kst.astimezone(UTC)
-
-
-def parse_iso8601(s: str) -> datetime:
+def to_utc(value: Union[datetime, str, date]) -> datetime:
     """
-    Parse an ISO8601 string and return tz-aware datetime in UTC.
-    Accepts 'Z' or offset. Raises ValueError on invalid input.
+    Interpret input as KST/local time and convert to UTC.
+    - datetime naive => assume LOCAL_TZ
+    - ISO8601 string with tz => respected; without tz => assume LOCAL_TZ
+    - 'YYYY-MM-DD' => that day's 00:00:00 at LOCAL_TZ
+    - date => 00:00:00 at LOCAL_TZ
     """
-    if not isinstance(s, str) or not s:
-        raise ValueError("invalid iso8601 string")
-    txt = s.strip()
-    if txt.endswith("Z"):
-        txt = txt[:-1] + "+00:00"
-    dt = datetime.fromisoformat(txt)
-    _ensure_aware(dt)
-    return dt.astimezone(UTC)
+    if isinstance(value, date) and not isinstance(value, datetime):
+        dt_local = datetime.combine(value, time.min, tzinfo=LOCAL_TZ)
+        return dt_local.astimezone(UTC)
+
+    if isinstance(value, str):
+        if _is_date_str(value):
+            d = parse_kst_date(value)
+            dt_local = datetime.combine(d, time.min, tzinfo=LOCAL_TZ)
+            return dt_local.astimezone(UTC)
+        dt = _parse_iso_dt(value)
+        # If parsed as naive (assumed UTC in _parse_iso_dt), but we need "KST semantics" for to_utc
+        if dt.tzinfo is UTC and ("T" in value and not any(ch in value for ch in "+-Z")):
+            dt = dt.replace(tzinfo=LOCAL_TZ)
+        return dt.astimezone(UTC)
+
+    if isinstance(value, datetime):
+        dt_local = _ensure_aware(value, LOCAL_TZ)
+        # If input had explicit non-local tz, treat as given and convert
+        if dt_local.tzinfo is None:
+            dt_local = dt_local.replace(tzinfo=LOCAL_TZ)
+        return dt_local.astimezone(UTC)
+
+    raise ValueError("Unsupported type for to_utc")
 
 
-def to_iso8601(dt: datetime) -> str:
+def to_kst(value: Union[datetime, str]) -> datetime:
     """
-    Serialize a tz-aware datetime to ISO8601 with trailing 'Z' (UTC).
+    Interpret input as UTC and convert to LOCAL_TZ.
+    - datetime naive => assume UTC
+    - ISO8601 string with tz => respected; without tz => assume UTC
     """
-    _ensure_aware(dt)
-    dt_utc = dt.astimezone(UTC)
-    return dt_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if isinstance(value, str):
+        dt = _parse_iso_dt(value)  # naive -> assumed UTC
+        return dt.astimezone(LOCAL_TZ)
+
+    if isinstance(value, datetime):
+        dt_utc = _ensure_aware(value, UTC)
+        return dt_utc.astimezone(LOCAL_TZ)
+
+    raise ValueError("Unsupported type for to_kst")
 
 
 def parse_kst_date(s: str) -> date:
-    """
-    Parse 'YYYY-MM-DD' to a date (interpreted in KST context).
-    """
+    if not _is_date_str(s):
+        raise ValueError("Invalid date string, expected YYYY-MM-DD")
     try:
-        y, m, d = map(int, s.split("-"))
-        return date(y, m, d)
-    except Exception as e:  # noqa: BLE001
-        raise ValueError("invalid KST date format, expected YYYY-MM-DD") from e
+        y, m, d = s.split("-")
+        return date(int(y), int(m), int(d))
+    except Exception:
+        raise ValueError("Invalid date string")
 
 
-def kst_day_range_to_utc(date_kst: date) -> tuple[datetime, datetime]:
+def range_utc(start_kst: Union[date, str], end_kst: Union[date, str]) -> Tuple[datetime, datetime]:
     """
-    Given a KST calendar date, return the [start_utc, end_utc) UTC interval
-    that covers that local day.
+    Return UTC range [start, end) for KST-local calendar dates.
+    End is exclusive: from 00:00:00 of start_kst to 00:00:00 of (end_kst + 1 day) in LOCAL_TZ.
     """
-    if not isinstance(date_kst, date):
-        raise TypeError("expected date")
-    start_kst = datetime.combine(date_kst, time.min, tzinfo=KST)
-    end_kst = start_kst + timedelta(days=1)
-    return start_kst.astimezone(UTC), end_kst.astimezone(UTC)
+    if isinstance(start_kst, str):
+        start_kst = parse_kst_date(start_kst)
+    if isinstance(end_kst, str):
+        end_kst = parse_kst_date(end_kst)
+
+    start_local = datetime.combine(start_kst, time.min, tzinfo=LOCAL_TZ)
+    end_local = datetime.combine(end_kst + timedelta(days=1), time.min, tzinfo=LOCAL_TZ)
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
-def next_monday_00_kst(ref: datetime | None = None) -> datetime:
+def iso(dt_utc: datetime) -> str:
     """
-    Return next week's Monday 00:00 in KST (strictly after the current week).
-    If ref is None, use current UTC time.
+    Serialize UTC datetime to ISO8601 with 'Z' suffix.
     """
-    if ref is None:
-        ref = now_utc()
-    _ensure_aware(ref)
-    ref_kst = ref.astimezone(KST)
-    wd = ref_kst.weekday()  # Mon=0..Sun=6
-    days_until_next_mon = 7 - wd if wd != 0 else 7
-    next_mon = (ref_kst.date() + timedelta(days=days_until_next_mon))
-    return datetime.combine(next_mon, time.min, tzinfo=KST)
-
-
-def floor_to_slot(dt_utc: datetime, slot_min: int) -> datetime:
-    """
-    Floor a UTC datetime to the nearest earlier slot boundary in minutes.
-    """
-    _ensure_aware(dt_utc)
-    if slot_min <= 0:
-        raise ValueError("slot_min must be positive")
-    dt_utc = dt_utc.astimezone(UTC)
-    minutes = (dt_utc.minute // slot_min) * slot_min
-    return dt_utc.replace(minute=minutes, second=0, microsecond=0)
+    if not isinstance(dt_utc, datetime):
+        raise ValueError("iso() expects datetime")
+    dt_utc = _ensure_aware(dt_utc, UTC).astimezone(UTC).replace(microsecond=0)
+    return dt_utc.isoformat().replace("+00:00", "Z")

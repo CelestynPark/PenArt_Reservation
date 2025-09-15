@@ -1,234 +1,212 @@
 from __future__ import annotations
 
-import re
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
-from bson import ObjectId
+from pymongo import ASCENDING, IndexModel
+from pymongo.collection import Collection
+from pymongo.database import Database
 
-from app.core.constants import BookingStatus, Source, BOOKING_PREFIX
-from app.models.base import BaseModel, _coerce_dt, _coerce_id
-from app.utils.time import to_iso8601
+from app.core.constants import BookingStatus, Source
+from app.models.base import BaseModel
+from app.utils.time import iso
 
-_CODE_RE = re.compile(rf"^{BOOKING_PREFIX}-\d{{8}}-[A-Za-z0-9]{{6}}$")
+COLLECTION = "bookings"
+
+__all__ = ["COLLECTION", "get_collection", "ensure_indexes", "Booking"]
 
 
-def _coerce_status(v: Any) -> str:
-    if isinstance(v, BookingStatus):
-        return v.value
-    if isinstance(v, str) and v in {e.value for e in BookingStatus}:
-        return v
+def get_collection(db: Database) -> Collection:
+    return db[COLLECTION]
+
+
+def ensure_indexes(db: Database) -> None:
+    col = get_collection(db)
+    col.create_indexes(
+        [
+            IndexModel([("service_id", ASCENDING), ("start_at", ASCENDING)], unique=True, name="uq_service_start"),
+            IndexModel([("code", ASCENDING)], name="idx_code"),
+            IndexModel([("customer_id", ASCENDING), ("start_at", ASCENDING)], name="idx_customer_start"),
+        ]
+    )
+
+
+UTC = timezone.utc
+
+
+def _parse_utc(v: Any) -> datetime:
+    if isinstance(v, datetime):
+        return (v.replace(tzinfo=UTC) if v.tzinfo is None else v.astimezone(UTC))
+    if isinstance(v, str):
+        s = v.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            raise ValueError("invalid datetime")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    raise ValueError("invalid datetime")
+
+
+def _norm_status(v: Any) -> str:
     if v is None:
-        return BookingStatus.requested.value
-    raise ValueError("invalid booking status")
+        return BookingStatus.REQUESTED.value
+    try:
+        return BookingStatus(v).value
+    except Exception:
+        raise ValueError("invalid status")
 
 
-def _coerce_source(v: Any) -> str:
-    if isinstance(v, Source):
-        return v.value
-    if isinstance(v, str) and v in {e.value for e in Source}:
-        return v
+def _norm_source(v: Any) -> str:
     if v is None:
-        return Source.web.value
-    raise ValueError("invalid source")
+        return Source.WEB.value
+    try:
+        return Source(v).value
+    except Exception:
+        raise ValueError("invalid source")
 
 
-def _coerce_code(v: Any) -> Optional[str]:
+def _norm_str(v: Any, *, allow_empty: bool = True) -> Optional[str]:
     if v is None:
         return None
-    if not isinstance(v, str) or not v.strip():
-        raise ValueError("code must be a non-empty string")
-    if not _CODE_RE.fullmatch(v):
-        # allow only well-formed codes; generation happens elsewhere
-        raise ValueError("code format invalid")
+    if not isinstance(v, str):
+        raise ValueError("invalid string")
+    s = v.strip()
+    if not allow_empty and not s:
+        raise ValueError("empty string not allowed")
+    return s
+
+
+def _norm_uploads(v: Any) -> list[Any]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise ValueError("uploads must be list")
     return v
 
 
-def _coerce_uploads(v: Any) -> List[Dict[str, Any]]:
-    if v is None:
-        return []
-    if not isinstance(v, list):
-        raise ValueError("uploads must be a list")
-    out: List[Dict[str, Any]] = []
-    for i, it in enumerate(v):
-        if isinstance(it, str):
-            url = it.strip()
-            if not url:
-                raise ValueError(f"uploads[{i}] url empty")
-            out.append({"url": url})
-        elif isinstance(it, dict):
-            url = it.get("url")
-            if not isinstance(url, str) or not url.strip():
-                raise ValueError(f"uploads[{i}].url required")
-            item: Dict[str, Any] = {"url": url.strip()}
-            # pass-through optional fields if provided (e.g., content_type, size)
-            for extra in ("content_type", "size", "name"):
-                if extra in it:
-                    item[extra] = it[extra]
-            out.append(item)
-        else:
-            raise ValueError("uploads items must be string or object")
+def _norm_history_item(h: Any) -> dict[str, Any]:
+    if not isinstance(h, dict):
+        raise ValueError("history item must be object")
+    at = _parse_utc(h.get("at"))
+    by = _norm_str(h.get("by"), allow_empty=False)
+    fr = _norm_str(h.get("from"), allow_empty=False)
+    to = _norm_str(h.get("to"), allow_empty=False)
+    reason = _norm_str(h.get("reason")) if "reason" in h else None
+    out = {"at": at, "by": by, "from": fr, "to": to}
+    if reason is not None:
+        out["reason"] = reason
     return out
 
 
-def _coerce_history(v: Any) -> List[Dict[str, Any]]:
+def _norm_history(v: Any) -> list[dict[str, Any]]:
     if v is None:
         return []
     if not isinstance(v, list):
-        raise ValueError("history must be a list")
-    out: List[Dict[str, Any]] = []
-    valid_status = {e.value for e in BookingStatus}
-    for i, it in enumerate(v):
-        if not isinstance(it, dict):
-            raise ValueError("history[] must be objects")
-        at = _coerce_dt(it.get("at"))
-        by = it.get("by")
-        if by is not None and not isinstance(by, (str, dict)):
-            raise ValueError(f"history[{i}].by must be string/object")
-        frm = it.get("from")
-        to = it.get("to")
-        if frm is not None and frm not in valid_status:
-            raise ValueError(f"history[{i}].from invalid")
-        if to is not None and to not in valid_status:
-            raise ValueError(f"history[{i}].to invalid")
-        reason = it.get("reason")
-        if reason is not None and not isinstance(reason, str):
-            raise ValueError(f"history[{i}].reason must be string")
-        out.append(
-            {
-                "at": at,
-                "by": by,
-                "from": frm,
-                "to": to,
-                "reason": reason,
-            }
-        )
-    return out
+        raise ValueError("history must be list")
+    items = [_norm_history_item(x) for x in v]
+    items.sort(key=lambda x: x["at"], reverse=True)
+    return items
 
 
 class Booking(BaseModel):
-    __collection__ = "bookings"
+    def __init__(self, doc: Optional[dict[str, Any]] = None):
+        super().__init__(doc or {})
 
-    code: Optional[str]
-    customer_id: Optional[ObjectId]
-    service_id: Optional[ObjectId]
-    start_at: datetime
-    end_at: datetime
-    status: str
-    note_customer: Optional[str]
-    note_internal: Optional[str]
-    uploads: List[Dict[str, Any]]
-    policy_agreed_at: datetime
-    source: str
-    history: List[Dict[str, Any]]
-    reschedule_of: Optional[ObjectId]
-    canceled_reason: Optional[str]
+    @staticmethod
+    def prepare_new(payload: dict[str, Any]) -> dict[str, Any]:
+        service_id = _norm_str(payload.get("service_id"), allow_empty=False)
+        customer_id = _norm_str(payload.get("customer_id"))  # optional at creation
+        start_at = _parse_utc(payload.get("start_at"))
+        end_at = _parse_utc(payload.get("end_at"))
+        policy_agreed_at = _parse_utc(payload.get("policy_agreed_at"))
 
-    def __init__(
-        self,
-        *,
-        id: ObjectId | str | None = None,
-        code: Optional[str] = None,
-        customer_id: ObjectId | str | None = None,
-        service_id: ObjectId | str | None = None,
-        start_at: datetime | str,
-        end_at: datetime | str,
-        status: BookingStatus | str | None = None,
-        note_customer: Optional[str] = None,
-        note_internal: Optional[str] = None,
-        uploads: Optional[List[Dict[str, Any] | str]] = None,
-        policy_agreed_at: datetime | str,
-        source: Source | str | None = None,
-        history: Optional[List[Dict[str, Any]]] = None,
-        reschedule_of: ObjectId | str | None = None,
-        canceled_reason: Optional[str] = None,
-        created_at: datetime | str | None = None,
-        updated_at: datetime | str | None = None,
-    ) -> None:
-        super().__init__(id=id, created_at=created_at, updated_at=updated_at)
-
-        if policy_agreed_at is None:
-            raise ValueError("policy_agreed_at is required")
-        self.policy_agreed_at = _coerce_dt(policy_agreed_at)
-
-        self.start_at = _coerce_dt(start_at)
-        self.end_at = _coerce_dt(end_at)
-        if self.end_at < self.start_at:
-            raise ValueError("end_at must be >= start_at")
-
-        self.code = _coerce_code(code)
-        self.customer_id = _coerce_id(customer_id)
-        self.service_id = _coerce_id(service_id)
-        if self.service_id is None:
-            raise ValueError("service_id is required")
-
-        self.status = _coerce_status(status)
-        self.note_customer = note_customer if (note_customer is None or isinstance(note_customer, str)) else str(note_customer)
-        self.note_internal = note_internal if (note_internal is None or isinstance(note_internal, str)) else str(note_internal)
-        self.uploads = _coerce_uploads(uploads)
-        self.source = _coerce_source(source)
-        self.history = _coerce_history(history)
-        self.reschedule_of = _coerce_id(reschedule_of)
-        self.canceled_reason = canceled_reason
-
-    def to_dict(self, exclude_none: bool = True) -> Dict[str, Any]:
-        base = super().to_dict(exclude_none=exclude_none)
-        out: Dict[str, Any] = {
-            **base,
-            "code": self.code,
-            "customer_id": str(self.customer_id) if self.customer_id else None,
-            "service_id": str(self.service_id) if self.service_id else None,
-            "start_at": to_iso8601(self.start_at),
-            "end_at": to_iso8601(self.end_at),
-            "status": self.status,
-            "note_customer": self.note_customer,
-            "note_internal": self.note_internal,
-            "uploads": list(self.uploads),
-            "policy_agreed_at": to_iso8601(self.policy_agreed_at),
-            "source": self.source,
-            "history": [
-                {
-                    "at": to_iso8601(h["at"]),
-                    "by": h.get("by"),
-                    "from": h.get("from"),
-                    "to": h.get("to"),
-                    "reason": h.get("reason"),
-                }
-                for h in self.history
-            ],
-            "reschedule_of": str(self.reschedule_of) if self.reschedule_of else None,
-            "canceled_reason": self.canceled_reason,
+        doc: dict[str, Any] = {
+            "service_id": service_id,
+            "customer_id": customer_id,
+            "start_at": start_at,
+            "end_at": end_at,
+            "policy_agreed_at": policy_agreed_at,
+            "status": _norm_status(payload.get("status")),
+            "source": _norm_source(payload.get("source")),
+            "code": _norm_str(payload.get("code")),
+            "note_customer": _norm_str(payload.get("note_customer")) or "",
+            "note_internal": _norm_str(payload.get("note_internal")) or "",
+            "uploads": _norm_uploads(payload.get("uploads")),
+            "history": _norm_history(payload.get("history")),
+            "reschedule_of": _norm_str(payload.get("reschedule_of")),
+            "canceled_reason": _norm_str(payload.get("canceled_reason")),
         }
-        if exclude_none:
-            out = {k: v for k, v in out.items() if v is not None}
-        return out
+        return Booking.stamp_new(doc)
 
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "Booking":
-        obj: "Booking" = cls.__new__(cls)  # type: ignore[call-arg]
-        # Base fields
-        setattr(obj, "id", _coerce_id(d.get("_id", d.get("id"))))
-        setattr(obj, "created_at", _coerce_dt(d.get("created_at")))
-        setattr(obj, "updated_at", _coerce_dt(d.get("updated_at"), getattr(obj, "created_at")))
+    @staticmethod
+    def prepare_update(partial: dict[str, Any]) -> dict[str, Any]:
+        upd: dict[str, Any] = {}
 
-        # Required times
-        setattr(obj, "start_at", _coerce_dt(d.get("start_at")))
-        setattr(obj, "end_at", _coerce_dt(d.get("end_at")))
-        if obj.end_at < obj.start_at:
-            raise ValueError("end_at must be >= start_at")
+        if "service_id" in partial:
+            upd["service_id"] = _norm_str(partial.get("service_id"), allow_empty=False)
 
-        # Simple fields
-        setattr(obj, "code", _coerce_code(d.get("code")))
-        setattr(obj, "customer_id", _coerce_id(d.get("customer_id")))
-        setattr(obj, "service_id", _coerce_id(d.get("service_id")))
+        if "customer_id" in partial:
+            upd["customer_id"] = _norm_str(partial.get("customer_id"))
 
-        setattr(obj, "status", _coerce_status(d.get("status")))
-        setattr(obj, "note_customer", d.get("note_customer"))
-        setattr(obj, "note_internal", d.get("note_internal"))
-        setattr(obj, "uploads", _coerce_uploads(d.get("uploads")))
-        setattr(obj, "policy_agreed_at", _coerce_dt(d.get("policy_agreed_at")))
-        setattr(obj, "source", _coerce_source(d.get("source")))
-        setattr(obj, "history", _coerce_history(d.get("history")))
-        setattr(obj, "reschedule_of", _coerce_id(d.get("reschedule_of")))
-        setattr(obj, "canceled_reason", d.get("canceled_reason"))
-        return obj
+        if "start_at" in partial:
+            upd["start_at"] = _parse_utc(partial.get("start_at"))
+
+        if "end_at" in partial:
+            upd["end_at"] = _parse_utc(partial.get("end_at"))
+
+        if "policy_agreed_at" in partial:
+            upd["policy_agreed_at"] = _parse_utc(partial.get("policy_agreed_at"))
+
+        if "status" in partial:
+            upd["status"] = _norm_status(partial.get("status"))
+
+        if "source" in partial:
+            upd["source"] = _norm_source(partial.get("source"))
+
+        if "code" in partial:
+            upd["code"] = _norm_str(partial.get("code"))
+
+        if "note_customer" in partial:
+            upd["note_customer"] = _norm_str(partial.get("note_customer")) or ""
+
+        if "note_internal" in partial:
+            upd["note_internal"] = _norm_str(partial.get("note_internal")) or ""
+
+        if "uploads" in partial:
+            upd["uploads"] = _norm_uploads(partial.get("uploads"))
+
+        if "history" in partial:
+            upd["history"] = _norm_history(partial.get("history"))
+
+        if "reschedule_of" in partial:
+            upd["reschedule_of"] = _norm_str(partial.get("reschedule_of"))
+
+        if "canceled_reason" in partial:
+            upd["canceled_reason"] = _norm_str(partial.get("canceled_reason"))
+
+        return Booking.stamp_update(upd)
+
+    def to_dict(self, fields: Optional[list[str]] = None) -> dict[str, Any]:
+        d = super().to_dict(fields)
+        for k in ("start_at", "end_at", "policy_agreed_at"):
+            if k in self._doc and (fields is None or k in d):
+                d[k] = iso(_parse_utc(self._doc[k]))
+        if "history" in self._doc and (fields is None or "history" in d):
+            out_hist: list[dict[str, Any]] = []
+            for h in self._doc.get("history", []) or []:
+                at = iso(_parse_utc(h["at"]))
+                item = {**h, "at": at}
+                out_hist.append(item)
+            d["history"] = out_hist
+        return d
+
+    @staticmethod
+    def append_history(existing: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+        hist = existing.get("history") or []
+        hist.append(_norm_history_item(entry))
+        hist.sort(key=lambda x: x["at"], reverse=True)
+        return {"history": hist}

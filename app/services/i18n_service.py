@@ -1,93 +1,110 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+import json
+import os
+from threading import Lock
+from typing import Any, Dict, Optional, Mapping, Iterable
 
-from flask import g, request
-
-from app.core.constants import DEFAULT_LANG
-
-_SUPPORTED = {"ko", "en"}
-
-
-def _normalize_lang(v: Optional[str]) -> Optional[str]:
-    if not v:
-        return None
-    v = v.strip().lower().replace("_", "-")
-    if v in _SUPPORTED:
-        return v
-    # Accept forms like "en-US", "ko-KR"
-    base = v.split("-", 1)[0]
-    return base if base in _SUPPORTED else None
+from flask import Request
+from app.core.constants import LANG_KO, LANG_EN, SUPPORTED_LANGS, ErrorCode
 
 
-def get_lang(preferred: str | None = None) -> str:
-    for cand in (
-        preferred,
-        getattr(g, "lang", None),
-        request.cookies.get("lang") if request else None,
-        DEFAULT_LANG,
-        "ko",
-    ):
-        norm = _normalize_lang(cand)
-        if norm:
-            return norm
-    return "ko"
+class I18nFormatError(Exception):
+    code = ErrorCode.INVALID_PAYLOAD
+
+    def __init__(self, key: str, missing_key: str):
+        super().__init__(f"Missing format key '{missing_key}' for i18n key '{key}'")
+        self.key = key
+        self.missing_key = missing_key
 
 
-def pick_i18n(doc: Mapping[str, Any], key_prefix: str, lang: str | None = None) -> str:
-    eff = get_lang(lang)
-    key = f"{key_prefix}_i18n"
-    bundle = doc.get(key) if isinstance(doc, Mapping) else None
-    if not isinstance(bundle, Mapping):
-        return ""
-    val = bundle.get(eff)
-    if isinstance(val, str) and val.strip():
-        return val
-    val_ko = bundle.get("ko")
-    return val_ko if isinstance(val_ko, str) else ""
+class I18nService:
+    def __init__(self, bundle_paths: Optional[Mapping[str, str]] = None):
+        self._bundle_paths: Dict[str, str] = dict(
+            bundle_paths
+            or {
+                LANG_KO: os.path.join("app", "i18n", "ko.json"),
+                LANG_EN: os.path.join("app", "i18n", "en.json"),
+            }
+        )
+        self._bundles: Dict[str, Dict[str, Any]] = {LANG_KO: {}, LANG_EN: {}}
+        self._lock = Lock()
+        self._loaded = False
+        self._load_once()
+
+    def _load_once(self) -> None:
+        if self._loaded:
+            return
+        with self._lock:
+            if self._loaded:
+                return
+            for lang in SUPPORTED_LANGS:
+                path = self._bundle_paths.get(lang)
+                if not path:
+                    self._bundles[lang] = {}
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        self._bundles[lang] = data if isinstance(data, dict) else {}
+                except FileNotFoundError:
+                    self._bundles[lang] = {}
+            self._loaded = True
+
+    @staticmethod
+    def _norm_lang(lang: Optional[str]) -> str:
+        l = (lang or "").split(",")[0].strip().lower()
+        if not l:
+            return LANG_KO
+        for s in SUPPORTED_LANGS:
+            if l == s or l.startswith(s + "-"):
+                return s
+        return LANG_KO
+
+    @staticmethod
+    def _iter_accept(lang_header: str) -> Iterable[str]:
+        for part in lang_header.split(","):
+            base = part.split(";")[0].strip().lower()
+            if base:
+                yield base
+
+    def detect_lang(self, request: Request) -> str:
+        q = request.args.get("lang")
+        if q:
+            return self._norm_lang(q)
+        c = request.cookies.get("lang")
+        if c:
+            return self._norm_lang(c)
+        h = request.headers.get("Accept-Language", "")
+        for cand in self._iter_accept(h):
+            norm = self._norm_lang(cand)
+            if norm in SUPPORTED_LANGS:
+                return norm
+        return LANG_KO
+
+    def _lookup(self, lang: str, key: str) -> Any:
+        v = self._bundles.get(lang, {}).get(key)
+        if v is None and lang != LANG_KO:
+            v = self._bundles.get(LANG_KO, {}).get(key)
+        return v if v is not None else key
+
+    def get(self, lang: str, key: str, **kwargs: Any) -> str:
+        self._load_once()
+        l = self._norm_lang(lang)
+        raw = self._lookup(l, key)
+        s = str(raw)
+        if ("{" in s and "}" in s) or kwargs:
+            try:
+                return s.format(**kwargs)
+            except KeyError as e:
+                missing = str(e).strip("'")
+                raise I18nFormatError(key, missing)
+        return s
 
 
-_MESSAGES: Dict[str, Dict[str, str]] = {
-    "ko": {
-        "error.invalid_payload": "요청 형식이 올바르지 않습니다.",
-        "error.unauthorized": "인증이 필요합니다.",
-        "error.forbidden": "접근 권한이 없습니다.",
-        "error.not_found": "요청하신 항목을 찾을 수 없습니다.",
-        "error.rate_limited": "요청이 너무 많습니다. 잠시 후 다시 시도해주세요.",
-        "booking.cutoff.change": "정책상 해당 시간은 변경이 불가합니다.",
-        "booking.cutoff.cancel": "정책상 해당 시간은 취소가 불가합니다.",
-        "order.expired": "입금 기한이 만료되었습니다. 주문이 취소 처리됩니다.",
-        "empty.content": "아직 등록된 콘텐츠가 없습니다.",
-        "gallery.load_error": "이미지를 불러오지 못했습니다. 새로고침 해주세요.",
-    },
-    "en": {
-        "error.invalid_payload": "The request payload is invalid.",
-        "error.unauthorized": "Authentication required.",
-        "error.forbidden": "You do not have permission.",
-        "error.not_found": "The requested item was not found.",
-        "error.rate_limited": "Too many requests. Please try again later.",
-        "booking.cutoff.change": "Changes are not allowed by policy for this time.",
-        "booking.cutoff.cancel": "Cancellation is not allowed by policy for this time.",
-        "order.expired": "The payment window has expired. Your order will be canceled.",
-        "empty.content": "No content has been published yet.",
-        "gallery.load_error": "Failed to load images. Please refresh.",
-    },
-}
+# Singleton + functional helper
+i18n = I18nService()
 
 
-def t(key: str, lang: str | None = None, **params: Any) -> str:
-    eff = get_lang(lang)
-    msg = (_MESSAGES.get(eff) or {}).get(key)
-    if not msg:
-        msg = (_MESSAGES.get("ko") or {}).get(key) or key
-    try:
-        return msg.format(**params) if params else msg
-    except Exception:
-        return msg  # do not raise if formatting fails
-
-
-def i18n_wrap(payload: Dict[str, Any], lang: str | None = None) -> Dict[str, Any]:
-    eff = get_lang(lang)
-    out = dict(payload or {})
-    out["i18n"] = {"lang": eff}
-    return out
+def detect_lang(request: Request) -> str:
+    return i18n.detect_lang(request)
