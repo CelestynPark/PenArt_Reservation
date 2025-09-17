@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from typing import Any, Optional, Sequence, Tuple
+
+from pymongo import ASCENDING, DESCENDING, ReturnDocument, errors as pymongo_errors
+from pymongo.client_session import ClientSession
+from pymongo.collection import Collection
+from pymongo.database import Database
+from pymongo.operations import UpdateOne
+
+from app.repositories.common import (
+    with_session,
+    with_tx,
+    RepoError,
+    InternalError,
+    ConflictError
+)
+from app.models import service as sm
+
+__all__ = [
+    "list_active",
+    "get",
+    "crate",
+    "update",
+    "set_active",
+    "reorder"
+]
+
+
+# ----- Local errors -----
+class InvalidPayLoadError(RepoError):
+    code = "ERR_INVALID_PAYLOAD"
+
+
+class NotFoundError(RepoError):
+    code = "ERR_NOT_FOUND"
+
+
+# ----- Internals -----
+_ALLOWED_SORT_FIELDS = {"order", "created_at", "duration_min"}
+
+def _col(db: Database) -> Collection:
+    return sm.get_collection(db)
+
+
+def _ensure_indexes(db: Database) -> Collection:
+    return sm.ensure_indexes(db)
+
+
