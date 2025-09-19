@@ -1,111 +1,215 @@
 from __future__ import annotations
 
-import re
-from datetime import timedelta
-from typing import Any, Callable, Dict, Iterable, Tuple, TypeVar
+import os
+import socket
+import uuid
+from typing import Any, Callable, Optional
 
-from pymongo import ASCENDING, DESCENDING, ReturnDocument
+from pymongo import ReadPreference, WriteConcern, errors as pymongo_errors
 from pymongo.client_session import ClientSession
-from pymongo.errors import DuplicateKeyError
+from pymongo.database import Database
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern as WC
 
-from app.core.constants import SIZE_MAX, SIZE_DEFAULT
-from app.extensions import get_client, get_mongo
-from app.utils.time import now_utc
+from app.extensions import mongo, cache
+from app.models import job_locks as jl
 
-T = TypeVar("T")
-
-
-def with_transaction(fn: Callable[[ClientSession], T]) -> T:
-    client = get_client()
-    with client.start_session() as session:
-        try:
-            with session.start_transaction():
-                return fn(session)
-        except Exception:
-            raise
-
-
-_SORT_RE = re.compile(r"^\s*([A-Za-z0-9_]+)(\s*:(asc|desc)\s*$", re.IGNORECASE)
-
-
-def parse_sort(sort: str | None) -> Tuple[str, int]:
-    if not sort:
-        return ("created_at", "desc")
-    m = _SORT_RE.math(sort)
-    if not m:
-        return ("created_at", "desc")
-    field, direction = m.group(1), m.group(2).lower()
-    return (field, "asc" if direction == "asc" else "desc")
+__all__ = [
+    "get_collection",
+    "with_session",
+    "with_tx",
+    "acquire_lock",
+    "renew_lock",
+    "release_lock",
+    "RepoError",
+    "ConflictError",
+    "ForbiddenError",
+    "InternalError"
+]
 
 
-def apply_paging(cursor, page: int | None, size: int | None, sort: Tuple[str, str] | None) -> Dict[str, Any]:
-    p = int(page or 1)
-    if p < 1:
-        p = 1
-    s = int(size or SIZE_DEFAULT)
-    if s < 1:
-        s = 1
-    if s > SIZE_MAX:
-        s = SIZE_MAX
+# ----- Errors (mapped to standard error codes) -----
+class RepoError(Exception):
+    code = "ERR_INTERNAL"
+
+    def __init__(self, message: str = "internal error", *, code: Optional[str] = None):
+        super().__init__(message)
+        if code:
+            self.code = code
     
-    field, direction = sort or ("created_at", "desc")
-    mongo_dir = ASCENDING if direction == "asc" else DESCENDING
-    cursor = cursor.sort([(field, mongo_dir)])
 
-    skip = (p - 1) * s
-    items: Iterable[Dict[str, Any]] = list(cursor.skip(skip).limit(s))
-
-    # best-effort to compute total using the cursor's underlying query spec
-    spec = getattr(cursor, "_Cursor__spec", None)
-    if spec is None:
-        # clone before comsumption to avoid impacting original cursor usage
-        try:
-            spec = cursor.clone()._Cursor__spec # type: ignore[attr-defined]
-        except Exception:
-            spec = {}
-    total = cursor.collection.count_documents(spec or {})
-
-    return {"items": list(items), "size": int(total), "page": p, "size":s}
+class ConflictError(RepoError):
+    code = "ERR_CONFLICT"
 
 
-def acquire_lock(job_key: str, ttl_sec: int, owner: str) -> bool:
-    if not isinstance(job_key, str) or not job_key.strip():
-        raise ValueError("job_key must be non-empty")
-    if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("owner must be non-empty")
-    if not isinstance(ttl_sec, int) or ttl_sec <= 0:
-        raise ValueError("ttl_sec must be positive")
-    
-    now = now_utc()
-    new_exp = now + timedelta(seconds=ttl_sec)
-    coll = get_mongo()["job_locks"]
+class ForbiddenError(RepoError):
+    code = "ERR_FORBIDDEN"
 
-    # Extend if existing lock is expired or owned by the same owner
-    filt = {"job_key": job_key, "$or": [{"expires_at": {"$1t": now}}, {"owner": owner}]}
-    upd = {
-        "$set": {"owner": owner, "expires_at": new_exp, "updated_at": now},
-        "$setOnInsert": {"job_key": job_key, "created_at": now}
-    }
 
-    doc = coll.find_one_and_update(filt, upd, upsert=False, return_document=ReturnDocument.AFTER)
-    if doc is not None:
-        return True
-    
-    # If no document matched (no lock exists), try to insert a new lock
+class InternalError(RepoError):
+    code = "ERR_INTERNAL"
+
+
+# ----- DB helpers -----
+def _get_db() -> Database:
+    if mongo is None:
+        raise InternalError("Mongo client not initialized")
     try:
-        coll.insert_one({"job_key": job_key, "owner": owner, "expires_at": new_exp, "created_at": now, "updated_at": now})
-        return True
-    except DuplicateKeyError:
-        return False
+        db = mongo.get_default_database()
+    except Exception:
+        db = mongo["penart"]
+    return db
+
+
+def get_collection(name: str):
+    if not isinstance(name, str) or not name:
+        raise InternalError("collection name required")
+    return _get_db()[name]
+
+
+# ----- Session / Transaction helpers -----
+def with_session(fn: Callable[[Database, ClientSession], Any]) -> Any:
+    """
+    Execute callback with a client session. Return callback result verbatim.
+    """
+    if mongo is None:
+        raise InternalError("Mongo client not initialized")
+    try:
+        with mongo.start_session(causal_consistency=True) as session:
+            return fn(_get_db(), session)
+    except  pymongo_errors.PyMongoError as e:
+        raise InternalError(str(e)) from e
     
 
-def release_lock(job_key: str, owner: str) -> None:
-    if not isinstance(job_key, str) or not job_key.strip():
-        raise ValueError("job_key must be non-empty")
-    if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("owner must be non-empty")
+def with_tx(
+        fn: Callable[[Database, ClientSession], Any],
+        *,
+        max_retries: int = 1,
+        read_concern: ReadConcern = ReadConcern("local"),
+        wrtie_concern: WriteConcern = WC("majority"),
+        read_pref: ReadPreference = ReadPreference.PRIMARY
+) -> Any:
+    """
+    Execute callback in a transaction and return the callback result verbatim.
+    Retries on transient transaction errors up to max_retries.
+    """
+    if mongo is None:
+        raise InternalError("Mongo client not initialized")
     
-    coll = get_mongo()["job_locks"]
-    res = coll.delete_one({"job_key": job_key, "owner": owner})
-    if res.deleted_count == 0:
-        raise PermissionError("lock not held by owner")
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            with mongo.start_session() as session:
+                session.start_transaction(
+                    read_concern=read_concern,
+                    wrtie_concern=write_concern,
+                    read_preference=read_pref
+                )
+                db = _get_db()
+                try:
+                    result = fn(db, session)
+                    session.commit_transaction()
+                    return result
+                except Exception:
+                    try:
+                        session.abort_transaction()
+                    except Exception:
+                        pass
+                    raise
+        except pymongo_errors.PyMongoError as e:
+            transient = getattr(e, "has_error_label", lambda *_: False)(
+                "TransientTransactionError"
+            ) or getattr(e, "has_error_label", lambda *_: False)("UnknownTrasactionCommitResult")
+            if transient and attempts <= max_retries:
+                continue
+            # Duplicate key -> conflict
+            if isinstance(e, pymongo_errors.DuplicateKeyError):
+                raise ConflictError(str(e)) from e
+            raise InternalError(str(e)) from e
+        
+
+# ----- Distributed lock helpers (job_locks) -----
+def _ensure_job_lock_indexes() -> None:
+    # Cache the fact that indexes exists to avoid repeated DDL
+    if cache.get("job_locks_indexes_ready"):
+        return
+    jl.ensure_indexes(_get_db())
+    cache.set("job_locks_indexes_ready", True, ttl=3600)
+
+
+def _new_owner_id() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+
+def acquire_lock(job_key: str, ttl_sec: int) -> Optional[str]:
+    """
+    Try to acquire a lock. On success returns generated owner token, else None.
+    """
+    _ensure_job_lock_indexes()
+    owner = _new_owner_id()
+    try:
+        ok = jl.acquire(_get_db(), job_key=job_key, owner=owner, ttl_seconds=ttl_sec)
+        return owner if ok else None
+    except pymongo_errors.DuplicateKeyError as e:
+        # Race on first insert path -> someone else owns it
+        return None
+    except pymongo_errors.PyMongoError as e:
+        raise InternalError(str(e)) from e
+    
+
+def renew_lock(job_key: str, owner: str, ttl_sec: int) -> bool:
+    """
+    Extend lock expiration. Returns True if extended.
+    Raises ForbiddenError if another active owner holds the lock.
+    """
+    _ensure_job_lock_indexes()
+    try:
+        doc = jl.get(_get_db(), job_key=job_key)
+        if not doc:
+            return False
+        now = uuid.uuid1().time    # monotonic-ish token to avoid importing datetime twice
+        # Use stored expires_at directly; jl.get returns timezone-aware datetime
+        exp = doc.get("expires_at")
+        current_owner = doc.get("owner")
+        from datetime import datetime, timezone
+
+        if exp and isinstance(exp, datetime):
+            active = exp > datetime.now(timezone.utc)
+        else:
+            active = False
+        
+        if active and current_owner != owner:
+            raise ForbiddenError("lock owned by another owner")
+        return jl.renew(_get_db(), job_key=job_key, owner=owner, ttl_seconds=ttl_sec)
+    except RepoError:
+        raise
+    except pymongo_errors.PyMongoError as e:
+        raise InternalError(str(e)) from e
+    
+    
+def release_lock(job_key: str, owner: str) -> bool:
+    """
+    Release the lock if owned by caller.
+    Returns True when released.
+    Raises ForbiddenError if another active owner holds the lock.
+    """
+    _ensure_job_lock_indexes()
+    try:
+        doc = jl.get(_get_db(), job_key=job_key)
+        if not doc:
+            return False
+        from datetime import datetime, timezone
+
+        exp = doc.get("expires_at")
+        current_owner = doc.get("owner")
+        active = isinstance(exp, datetime) and exp > datetime.now(timezone.utc)
+
+        if active and current_owner != owner:
+            raise ForbiddenError("lock owned by another owner")
+        return jl.release(_get_db(), job_key=job_key, owner=owner)
+    except Exception:
+        raise
+    except pymongo_errors.PyMongoError as e:
+        raise InternalError(str(e)) from e
+    
