@@ -1,124 +1,130 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "penart"
+name = "pen-art"
 version = "0.1.0"
-description = "Pen Art — Flask + MongoDB(Replica Set) + Jinja SSR"
+description = "Pen Art — Flask + MongoDB Replica Set + SSR Jinja (KO/EN, KST display / UTC storage)"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 authors = [{ name = "Pen Art Team" }]
-keywords = ["flask", "mongodb", "jinja", "apscheduler", "korea", "ssr"]
-# 런타임 의존성은 requirements.txt로 고정 관리(중복 선언 금지)
+license = { file = "LICENSE" }
 
-[project.optional-dependencies]
-dev = [
-  "black==24.8.0",
-  "isort==5.13.2",
-  "ruff==0.6.9",
-  "mypy==1.11.1",
-  "pytest==8.3.2",
-  "pytest-cov==5.0.0",
-  "types-requests==2.32.0.20240907",
-]
-
-[project.urls]
-homepage = "https://example.com/penart"
-repository = "https://example.com/penart/repo"
-
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["app*"]
-
-# -----------------------------
-# Formatting / Linting
-# -----------------------------
 [tool.black]
 line-length = 100
 target-version = ["py311"]
-include = "\\.pyi?$"
+include = '\.pyi?$'
 exclude = """
-/(
-    \.git
-  | \.hg
-  | \.mypy_cache
-  | \.ruff_cache
-  | \.venv
-  | build
-  | dist
-)/
+(
+  ^/(\.venv|venv|.git|.mypy_cache|.ruff_cache|.pytest_cache)/
+  | ^/static/
+  | ^/openapi/
+  | ^/scripts/
+)
 """
 
 [tool.isort]
 profile = "black"
 line_length = 100
+multi_line_output = 3
+combine_as_imports = true
+include_trailing_comma = true
+force_grid_wrap = 0
 known_first_party = ["app"]
-skip_gitignore = true
+skip = ["static", "openapi", "scripts", "venv", ".venv"]
 
 [tool.ruff]
-line-length = 100
 target-version = "py311"
-src = ["app", "tests"]
-extend-exclude = [".venv", "build", "dist"]
+line-length = 100
+extend-exclude = ["static", "openapi", "scripts", "venv", ".venv"]
 
 [tool.ruff.lint]
-select = [
-  "E",   # pycodestyle
-  "F",   # pyflakes
-  "W",   # warnings
-  "I",   # isort
-  "B",   # bugbear
-  "UP",  # pyupgrade
-  "ISC", # implicit-str-concat
-  "PERF" # performance
-]
+# E,F: pycodestyle/pyflakes · I: import order · B: bugbear · C4: comprehensions
+# UP: pyupgrade · SIM: simplify · PIE: misc correctness
+select = ["E", "F", "I", "B", "C4", "UP", "SIM", "PIE"]
 ignore = [
-  "E203", # black과의 충돌
-  "E501", # line-length는 formatter가 책임
-  "W503", # black과의 충돌
+  "E203",  # handled by black
+  "E266",  # allow section comments
 ]
-fixable = ["ALL"]
-unfixable = []
+preview = false
 
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+combine-as-imports = true
 
-# -----------------------------
-# Type Checking
-# -----------------------------
 [tool.mypy]
 python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
 warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-check_untyped_defs = true
 no_implicit_optional = true
-pretty = true
-show_error_codes = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+strict_equality = true
 ignore_missing_imports = true
-plugins = []
+follow_imports = "silent"
+enable_error_code = ["truthy-bool", "redundant-expr"]
+exclude = '(venv|\.venv|static|openapi|scripts)/'
 
-# -----------------------------
-# Tests
-# -----------------------------
 [tool.pytest.ini_options]
 minversion = "8.0"
+addopts = "-q -ra --strict-markers --disable-warnings --maxfail=1"
 testpaths = ["tests"]
-addopts = "-q -ra"
+python_files = ["test_*.py"]
+python_classes = ["Test*", "*Tests"]
+python_functions = ["test_*"]
+# Common markers
+markers = [
+  "slow: marks tests as slow",
+  "e2e: end-to-end tests",
+  "unit: unit tests",
+]
+# Reduce noisy deprecation warnings from deps
 filterwarnings = [
   "ignore::DeprecationWarning",
+  "ignore::PendingDeprecationWarning",
 ]
-# DB/시간대는 테스트 픽스처에서 KST↔UTC를 명시적으로 다룸
 
-# -----------------------------
-# Ruff Formatter (선택 사용 가능)
-# -----------------------------
-[tool.ruff.format]
-quote-style = "preserve"
-indent-style = "space"
-skip-magic-trailing-comma = false
-docstring-code-format = true
+[tool.coverage.run]
+branch = true
+source = ["app"]
+relative_files = true
+omit = [
+  "tests/*",
+  "static/*",
+  "openapi/*",
+  "scripts/*",
+  "app/templates/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+[tool.bandit]
+skips = ["B101"]  # allow assert in tests/tools
+exclude_dirs = ["tests", "static", "openapi", "scripts", "venv", ".venv"]
+
+[tool.djlint]
+profile = "jinja"
+max_line_length = 100
+indent = 2
+extension = "html,jinja,htm"
+ignore = "H004,H006"  # allow inline CSS/JS when CSP permits
+exclude = "static/**,openapi/**"
+
+[tool.pydocstyle]
+convention = "google"
+add_ignore = ["D100", "D104", "D105", "D107"]  # relax module/class/magic docstrings
+
+[tool.editorconfig]
+indent_style = "space"
+indent_size = 2
+end_of_line = "lf"
+insert_final_newline = true
+charset = "utf-8"
+trim_trailing_whitespace = true

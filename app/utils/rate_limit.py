@@ -2,192 +2,148 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional, Tuple
 
-from flask import Request, current_app, g, request
+from flask import has_request_context, request
+from pymongo import ReturnDocument
+from pymongo.collection import Collection
 
-from app.core.constants import ErrorCode
-from app.utils.responses import fail
+from app.config import load_config
+from app.extensions import get_mongo
 
-
-# ---------- In-memory fallback store (thread-safe) ----------
-class _MemoryStore:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._data: dict[str, Tuple[int, float]] = {}  # key -> (count, expire_epoch)
-
-    def incr(self, key: str, ttl: int) -> int:
-        now = time.time()
-        with self._lock:
-            count, exp = self._data.get(key, (0, 0))
-            if exp <= now:
-                count, exp = 0, now + ttl
-            count += 1
-            self._data[key] = (count, exp)
-            return count
-
-    def ttl(self, key: str) -> int:
-        with self._lock:
-            _, exp = self._data.get(key, (0, 0))
-            rem = int(exp - time.time())
-            return max(rem, -1) if exp else -1
+__all__ = ["RateLimitError", "rate_limit_key", "check_rate_limit", "remaining"]
 
 
-_memory_store = _MemoryStore()
+class RateLimitError(Exception):
+    code = "ERR_RATE_LIMIT"
+    status = 429
+
+    def __init__(self, message: str = "Too many requests"):
+        super().__init__(message)
+        self.message = message
 
 
-def _get_store():
-    """
-    Returns a Redis-like store if available (app.extensions.{redis|cache}),
-    otherwise uses in-process memory store.
-    """
-    try:
-        from app import extensions  # type: ignore
-    except Exception:
-        extensions = None  # type: ignore
-
-    # Prefer Redis client if provided by extensions
-    client = None
-    if extensions is not None:
-        client = getattr(extensions, "redis", None) or getattr(extensions, "cache", None)
-
-    if client is None:
-        return "memory", _memory_store
-    return "redis", client
+# --- helpers ---
+def _now_epoch() -> int:
+    return int(time.time())
 
 
-def _redis_incr_with_ttl(client, key: str, ttl: int) -> int:
-    # Works with redis-py like clients
-    pipe = client.pipeline() if hasattr(client, "pipeline") else None
-    if pipe:
-        pipe.incr(key)
-        # Set expire only if not set
-        if getattr(client, "ttl")(key) in (-2, -1):  # -2 no key, -1 no expire
-            pipe.expire(key, ttl)
-        else:
-            # Ensure at least some TTL remains
-            pass
-        res = pipe.execute()
-        return int(res[0])
-    # Fallback naive (non-pipeline) path
-    count = int(client.incr(key))
-    try:
-        if int(client.ttl(key)) in (-2, -1):
-            client.expire(key, ttl)
-    except Exception:
-        client.expire(key, ttl)
-    return count
+def _bucket(ts: Optional[int] = None) -> int:
+    return (ts or _now_epoch()) // 60
 
 
-def _redis_ttl(client, key: str) -> int:
-    try:
-        t = int(client.ttl(key))
-        # Redis: -2 no key, -1 no expire
-        if t < 0:
-            return -1
-        return t
-    except Exception:
-        return -1
+def _utc_expiry(minutes: int = 2) -> datetime:
+    return datetime.now(timezone.utc) + timedelta(minutes=minutes)
 
 
-# ---------- Public helpers ----------
-def key_for(req: Request) -> str:
-    """
-    Compose a stable rate-limit identity key:
-    - Primary: client IP (X-Forwarded-For first, else remote_addr)
-    - Secondary: user id if available (g.user_id), else '-'
-    """
-    ip = (req.headers.get("X-Forwarded-For") or "").split(",")[0].strip() or (req.remote_addr or "")
-    uid = getattr(g, "user_id", None)
-    return f"{ip}|{uid or '-'}"
-
-
-# ---------- Middleware factory ----------
-def rate_limit(per_min: Optional[int] = None):
-    """
-    Flask before_request middleware factory.
-
-    Usage (in app factory):
-        app.before_request(rate_limit())
-
-    Config (optional):
-        RATE_LIMIT_PER_MIN: int (default 60)
-        RATE_LIMIT_WHITELIST: comma-separated IPs (default none)
-        RATE_LIMIT_EXEMPT_PREFIXES: comma-separated path prefixes (default: /healthz,/readyz,/static,/favicon.ico)
-    """
-    def _before_request():
-        # Exempt safe/infra routes
-        cfg = current_app.config or {}
-        default_exempt = ["/healthz", "/readyz", "/static", "/favicon.ico"]
-        addl = str(cfg.get("RATE_LIMIT_EXEMPT_PREFIXES", "") or "").split(",") if cfg.get("RATE_LIMIT_EXEMPT_PREFIXES") else []
-        exempt_prefixes = tuple(p.strip() for p in (default_exempt + addl) if p.strip())
-        path = request.path or "/"
-        if request.method == "OPTIONS" or any(path.startswith(p) for p in exempt_prefixes):
-            return None
-
-        # Whitelist by IP
-        ip = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip() or (request.remote_addr or "")
-        wl = str(cfg.get("RATE_LIMIT_WHITELIST", "") or "").split(",") if cfg.get("RATE_LIMIT_WHITELIST") else []
-        if ip and ip in (x.strip() for x in wl if x.strip()):
-            return None
-
-        # Determine limit & window
-        limit = int(per_min or cfg.get("RATE_LIMIT_PER_MIN", 60))
-        if limit <= 0:
-            return None  # disabled
-
-        ident = key_for(request)
-        epoch = int(time.time())
-        window_sec = 60
-        window_id = epoch // window_sec
-        reset_at = (window_id + 1) * window_sec  # unix ts when the window resets
-        ttl = reset_at - epoch + 1  # keep the bucket slightly longer than rest of window
-        store_kind, store = _get_store()
-
-        bucket_key = f"rl:{ident}:{window_id}"
-
-        # Increment
-        if store_kind == "redis":
-            count = _redis_incr_with_ttl(store, bucket_key, ttl)
-            rem_ttl = _redis_ttl(store, bucket_key)
-        else:
-            count = store.incr(bucket_key, ttl)
-            rem_ttl = store.ttl(bucket_key)
-
-        remaining = max(limit - count, 0)
-
-        # Headers for clients
-        retry_after = rem_ttl if remaining <= 0 else 0
-        # If over the limit, return standardized 429 body
-        if count > limit:
-            resp = fail(
-                code=ErrorCode.RATE_LIMIT,
-                message="Too many requests",
-                status=429,
-            )
-            try:
-                resp.headers["Retry-After"] = str(max(retry_after, 1))
-                resp.headers["X-RateLimit-Limit"] = str(limit)
-                resp.headers["X-RateLimit-Remaining"] = "0"
-                resp.headers["X-RateLimit-Reset"] = str(reset_at)
-            except Exception:
-                pass
-            return resp
-
-        # Attach informative headers on success paths as well
+def rate_limit_key(ip: str, user_id: Optional[str] = None) -> str:
+    route = ""
+    if has_request_context():
         try:
-            # Note: these headers are advisory only
-            request.access_control_expose_headers = True  # hint for CORS layers if present
-            # Using Flask's after_request would be cleaner, but keep minimal & synchronous here.
-            # Many reverse proxies will forward these through.
-            current_app.logger  # touch to avoid unused warning under some linters
-            request.rate_limit = {  # type: ignore
-                "limit": limit,
-                "remaining": remaining,
-                "reset": reset_at,
-            }
+            route = request.path or ""
         except Exception:
-            pass
-        return None
+            route = ""
+    uid = user_id or "-"
+    return f"{ip}|{uid}|{route}"
 
-    return _before_request
+
+# --- Mongo backend ---
+_mongo_ready = False
+_mongo_lock = threading.Lock()
+
+
+def _get_collection() -> Optional[Collection]:
+    global _mongo_ready
+    try:
+        coll = get_mongo().get_database().get_collection("rate_limits")
+    except Exception:
+        return None
+    if not _mongo_ready:
+        with _mongo_lock:
+            if not _mongo_ready:
+                try:
+                    coll.create_index("expireAt", expireAfterSeconds=0, background=True)
+                    coll.create_index([("key", 1), ("bucket", 1)], unique=True, background=True)
+                except Exception:
+                    pass
+                _mongo_ready = True
+    return coll
+
+
+# --- In-memory fallback (single-process only) ---
+_mem_lock = threading.Lock()
+_mem_store: Dict[Tuple[str, int], int] = {}
+
+
+def _mem_inc(key: str, bkt: int) -> int:
+    with _mem_lock:
+        # cleanup old buckets opportunistically
+        cur_bkt = _bucket()
+        if bkt != cur_bkt:
+            for k in list(_mem_store.keys()):
+                if k[1] != cur_bkt:
+                    _mem_store.pop(k, None)
+            bkt = cur_bkt
+        cnt = _mem_store.get((key, bkt), 0) + 1
+        _mem_store[(key, bkt)] = cnt
+        return cnt
+
+
+def _mem_get(key: str, bkt: int) -> int:
+    with _mem_lock:
+        return _mem_store.get((key, bkt), 0)
+
+
+# --- public API ---
+def check_rate_limit(key: str, limit: Optional[int] = None) -> None:
+    cfg = load_config()
+    cap = int(limit if limit is not None else cfg.rate_limit_per_min)
+    if cap <= 0:
+        return
+    bkt = _bucket()
+
+    coll = _get_collection()
+    if coll is not None:
+        try:
+            doc = coll.find_one_and_update(
+                {"key": key, "bucket": bkt},
+                {
+                    "$inc": {"count": 1},
+                    "$setOnInsert": {"expireAt": _utc_expiry(2), "key": key, "bucket": bkt},
+                },
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+                projection={"count": 1, "_id": 0},
+            )
+            cnt = int((doc or {}).get("count", 0))
+        except Exception:
+            cnt = _mem_inc(key, bkt)
+    else:
+        cnt = _mem_inc(key, bkt)
+
+    if cnt > cap:
+        raise RateLimitError("Rate limit exceeded")
+
+
+def remaining(key: str, limit: Optional[int] = None) -> int:
+    cfg = load_config()
+    cap = int(limit if limit is not None else cfg.rate_limit_per_min)
+    if cap <= 0:
+        return cap
+    bkt = _bucket()
+
+    coll = _get_collection()
+    if coll is not None:
+        try:
+            doc = coll.find_one({"key": key, "bucket": bkt}, {"count": 1, "_id": 0})
+            used = int((doc or {}).get("count", 0))
+        except Exception:
+            used = _mem_get(key, bkt)
+    else:
+        used = _mem_get(key, bkt)
+
+    rem = cap - used
+    if rem < 0:
+        rem = 0
+    return rem

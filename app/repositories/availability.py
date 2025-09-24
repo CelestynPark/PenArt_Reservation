@@ -1,228 +1,262 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional, Tuple, Union
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
 
-from pymongo import ReturnDocument, errors as pymongo_errors
-from pymongo.client_session import ClientSession
-from pymongo.collection import Collection
-from pymongo.database import Database
-
-from app.repositories.common import (
-    with_session,
-    with_tx,
-    InternalError,
-    RepoError
-)
-from app.models import availability as av
-
+from app.models.base import TIMESTAMP_FIELDS
+from app.utils.time import isoformat_utc, now_utc
 
 __all__ = [
-    "get_rules",
-    "update_rules",
-    "get_exceptions",
-    "set_exception",
-    "get_base_days",
-    "set_base_days",
-    "find_applicable_rules"
+    "collection_name",
+    "schema_fields",
+    "indexes",
+    "normalize_availability"
 ]
 
 
-class InvalidPayloadError(RepoError):
+collection_name = "availability"
+
+schema_fields: Dict[str, any] = {
+    "rules": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "schema": {
+                "dow": {"type": "array", "items": {"type": {"type": "int(0..6)"}}},
+                "start": {"type": "string", "format": "HH:MM"},
+                "end": {"type": "string", "format": "HH:MM"},
+                "break": {
+                    "type": "array",
+                    "items": {
+                        "schema": {
+                            "start": {"type": "string", "format": "HH:MM"},
+                            "end": {"type": "string", "format": "HH:MM"}
+                        },
+                    },
+                },
+                "slots": {"type": "int", "min": 1},
+                "services": {"type": "array", "items": {"type": "string"}}
+            },
+        },
+        "default": []
+    },
+    "exceptions": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "schema": {
+                "date": {"type": "string", "format": "YYYY-MM-DD"},
+                "is_closed": {"type": "boolean", "default": False},
+                "blocks": {
+                    "type": "array?",
+                    "items": {
+                        "type": "object",
+                        "schema": {
+                            "start": {"type": "string", "format": "HH:MM"},
+                            "end": {"type": "string", "format": "HH:MM"}
+                        },
+                    },
+                }
+            }
+        },
+        "default": [],
+    },
+    "base_days": {"type": "array", "items": {"type": "int(0..6)"}},
+    TIMESTAMP_FIELDS[0]: {"type": "string?", "format": "iso8601"},
+    TIMESTAMP_FIELDS[1]: {"type": "string?", "format": "iso8601"}
+}
+
+indexes = [
+    # Optional helper if rule-level service filtering becomes hot
+    {"key": [("rules.services", 1)], "options": {"name": "rules.services_1", 
+     "background": True}}
+]
+
+
+class AvailabilityPayloadError(ValueError):
     code = "ERR_INVALID_PAYLOAD"
 
 
-def _col(db: Database) -> Collection:
-    return av.get_collection(db)
+def _ensure_mapping(doc: Mapping) -> None:
+    if not isinstance(doc, Mapping):
+        raise AvailabilityPayloadError("document must be a mapping/dict")
+    
+
+def _now_iso() -> str:
+    return isoformat_utc(now_utc())
 
 
-def _ensure_indexes(db: Database) -> None:
-    av.ensure_indexes(db)
-
-
-def _load_or_init(db: Database, session: Optional[ClientSession] = None) -> dict:
-    _ensure_indexes(db)
-    doc = _col(db).find_one({}, session=session)
-    if doc:
-        return doc
-    base = av.Availability.prepare_new({"rules": [], "exceptions": [], "base_days": []})
-    _col(db).insert_one(base, session=session)
-    return _col(db).find_one({}, session=session) or base
-
-
-def _normalize_update(partial: dict[str, Any]) -> dict[str, Any]:
+def _norm_int(v: Any, field: str, min_value: Optional[int] = None, max_value: Optional[int] = None) -> int:
     try:
-        return av.Availability.prepare_update(partial)
+        iv = int(v)
     except Exception as e:
-        raise InvalidPayloadError(str(e)) from e
+        raise AvailabilityPayloadError(f"{field} must be integer") from e
+    if min_value is not None and iv < min_value:
+        raise AvailabilityPayloadError(f"{field} must be >= {min_value}")
+    if max_value is not None and iv > max_value:
+        raise AvailabilityPayloadError(f"{field} must be <= {max_value}")
+    return iv
+
+
+def _norm_bool(v: Any) -> bool:
+    return bool(v) if isinstance(v, bool) else False
+
+
+def _norm_unique_sorted_ints(items: Iterable[Any], field: str, min_value: int, max_value: int) -> List[int]:
+    seen = set()
+    out: List[int] = []
+    for x in items or []:
+        iv = _norm_int(x, field, min_value=min_value, max_value=max_value)
+        if iv not in seen:
+            seen.add(iv)
+            out.append(iv)
+    out.sort()
+    return out
+
+
+@dataclass(frozen=True)
+class _HM:
+    h: str
+    m: str
+
+    def minutes(self) -> int:
+        return self.h * 60 + self.m
+    
+    def __str__(self) -> str:
+        return f"{self.h:02}:{self.m:02}"
     
 
-def get_rules() -> list[dict]:
-    def _fn(db: Database, session: ClientSession):
-        doc = _load_or_init(db, session)
-        return list(doc.get("rules", []))
-    
+def _parse_hhmm(s: Any, field: str) -> _HM:
+    if not isinstance(s, str) or len(s) != 5 or s[2] != ":":
+        raise AvailabilityPayloadError(f"{field} must be HH:MM")
+    hh, mm = s[:2], s[3:]
     try:
-        return with_session(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
+        h = int(hh)
+        m = int(mm)
+    except Exception as e:
+        raise AvailabilityPayloadError(f"{field} must be HH:MM") from e
+    if not (0 <= h <= 23) or not (0 <= m <= 59):
+        raise AvailabilityPayloadError(f"{field} out of range")
+    return _HM(h, m)
+
+
+def _ensure_start_before_end(start: _HM, end: _HM, field_prefix: str) -> None:
+    if start.minutes() >= end.minutes():
+        raise AvailabilityPayloadError(f"{field_prefix}. start must be earlier than {field_prefix}.end")
     
 
-def update_rules(rules: Iterable[dict[str, Any]]) -> list[dict]:
-    upd = _normalize_update({"rules": list(rules)})
+def _norm_breaks(items: Iterable[Mapping[str, Any]] | None, field_prefix: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for i, b in enumerate(items or []):
+        if not isinstance(b, Mapping):
+            raise AvailabilityPayloadError(f"{field_prefix}[{i}] must be an object")
+        s = _parse_hhmm(b.get("start"), f"{field_prefix}[{i}].start")
+        e = _parse_hhmm(b.get("end"), f"{field_prefix}[{i}].end")
+        _ensure_start_before_end(s, e, f"{field_prefix}[{i}]")
+        out.append({"start": str(e), "end": str(e)})
+    return out
 
-    def _fn(db: Database, session: ClientSession):
-        _load_or_init(db, session)
-        res = _col(db).find_one_and_update(
-            {},
-            {"$set": upd},
-            session=session,
-            upsert=True,
-            return_document=ReturnDocument.AFTER
+
+def _unique_trimmed_strs(items: Iterable[Any]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for x in items or []:
+        if not isinstance(x, str):
+            continue
+        t = x.strip()
+        if not t and t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _norm_rules(rules: Iterable[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, r in enumerate(rules or []):
+        if not isinstance(r, Mapping):
+            raise AvailabilityPayloadError(f"rules[{i}] must be an object")
+        dow = _norm_unique_sorted_ints(r.get("dow") or [], f"rules[{idx}].dow", 0, 6)
+        if not dow:
+            raise AvailabilityPayloadError(f"rules[{idx}].dow must have at least one day")
+        start = _parse_hhmm(r.get("start"), f"rules[{idx}].start")
+        end = _parse_hhmm(r.get("end"), f"rules[{idx}].end")
+        _ensure_start_before_end(start, end, f"rules[{idx}]")
+        slot_min = _norm_int(r.get("slot_min"), f"rule[{idx}].slot_min", min_value=1)
+        brks = _norm_breaks(r.get("break"), f"rules[{idx}].break")
+        services = _unique_trimmed_strs(r.get("service") or [])
+        out.append(
+            {
+                "dow": dow,
+                "start": str(start),
+                "end": str(end),
+                "break": brks,
+                "slot_min": slot_min,
+                "services": services or None
+            }
         )
-        return list(res.get("rules", [])) if res else []
-    
+    return out
+
+
+def _norm_blocks(blocks: Iterable[Mapping[str, Any]] | None, field_prefix: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for i, b in enumerate(blocks or []):
+        if not isinstance(b, Mapping):
+            raise AvailabilityPayloadError(f"{field_prefix}[{i}] must be an object")
+        s = _parse_hhmm(b.get("start"), f"{field_prefix}[{i}].start")
+        e = _parse_hhmm(b.get("end"), f"{field_prefix}[{i}].end")
+        _ensure_start_before_end(s, e, f"{field_prefix}[{i}]")
+        out.append({"start": str(s), "end": str(e)})
+    return out
+
+
+def _parse_yyyy_mm_dd(s: Any, field: str) -> str:
+    if not isinstance(s, str) or len(s) != 10 or s[4] != "-" or s[7] != "-":
+        raise AvailabilityPayloadError(f"{field} must be YYYY-MM-DD")
+    y, m, d = s.split("-")
     try:
-        return with_tx(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
-    
-
-def _parse_range_arg(
-        date_range: Union[Tuple[str, str], list[str], dict[str, str], None]
-) -> Optional[Tuple[str, str]]:
-    if date_range is None:
-        return None
-    if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
-        a, b = str(date_range[0]), str(date_range[1])
-        return (a, b) if a <= b else (b, a)
-    if isinstance(date_range, dict):
-        a = date_range.get("start") or date_range.get("from")
-        b = date_range.get("end") or date_range.get("to")
-        if isinstance(a, str) and isinstance(b, str):
-            return (a, b) if a <= b else (b, a)
-    raise InvalidPayloadError("invalid range")
+        yi = int(y)
+        mi = int(m)
+        di = int(d)
+    except Exception as e:
+        raise AvailabilityPayloadError(f"{field} must be YYYY-MM-DD") from e
+    if yi < 1970 or not (1 <= mi <= 12) or not (1 <= di <= 31):
+        raise AvailabilityPayloadError(f"{field} out of range") 
+    return f"{y:04}-{m:02}-{d:02}"
 
 
-def get_exceptions(
-        date_range: Union[Tuple[str, str], list[str], dict[str, str], None]
-) -> list[dict]:
-    rng = _parse_range_arg(date_range)
+def _norm_exceptions(ex: Iterable[Mapping[str, Any] | None]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, e in enumerate(ex or []):
+        if not isinstance(e, Mapping):
+            raise AvailabilityPayloadError(f"exceptions[{idx}] must be an object")
+        date = _parse_yyyy_mm_dd(e.get("date"), f"exceptions[{idx}].date")
+        is_closed = _norm_bool(ex.get("is_closed"))
+        blocks = _norm_blocks(ex.get("blocks"), f"exceptions[{idx}].blocks")
+        out.append({"date": date, "is_closed": is_closed, "blocks": blocks or None})
+    return out
 
-    def _fn(db: Database, session: ClientSession):
-        doc = _load_or_init(db, session)
-        items: list[dict] = list(doc.get("exceptions", []))
-        if not rng:
-            return items 
-        s, e = rng
-        return [x for x in items if isinstance(x.get("date"), str) and s <= x["date"] <= e]
 
-    try:
-        return with_session(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
-    
+def _normalize_availability(doc: Mapping[str, Any]) -> Dict[str, Any]:
+    _ensure_mapping(doc)
+    src = deepcopy(doc)
+    out: MutableMapping[str, Any] = {}
 
-def set_exception(date_str: str, patch: dict[str, Any]) -> dict:
-    if not isinstance(date_str, str) or not isinstance(patch, dict):
-        raise InvalidPayloadError("invalid payload")
-    norm = _normalize_update({"exceptions": [{"date": date_str, **patch}]})
-    new_ex = norm["exception"][0]
+    base_days = _norm_unique_sorted_ints(doc.get("base_days") or [], "base_days", 0, 6)
+    if not base_days:
+        raise AvailabilityPayloadError("base_days must have at least one day")
+    out["base_days"] = base_days
 
-    def _fn(db: Database, session: ClientSession):
-        doc = _load_or_init(db, session)
-        arr: list[dict] = list(doc.get("exceptions", []))
-        idx = next((i for i, x in enumerate(arr) if x.get("date") == new_ex["date"]), -1)
-        if idx >= 0:
-            arr[idx] = new_ex
-        else:
-            arr.append(new_ex)
-        upd = av.Availability.prepare_update({"exceptions": arr})
-        res = _col(db).find_one_and_update(
-            {},
-            {"$set": upd},
-            session=session,
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-        # return the normalized single exception as source of truth
-        return new_ex
-    
-    try:
-        return with_tx(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
-    
+    out["rules"] = _norm_rules(doc.get("rules"))
+    out["exceptions"] = _norm_exceptions(doc.get("exceptions"))
 
-def get_base_days() -> list[int]:
-    def _fn(db: Database, session: ClientSession):
-        doc = _load_or_init(db, session)
-        return list(doc.get("base_days", []))
-    
-    try:
-        return with_session(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
-    
+    now_iso = _now_iso()
+    created = src.get(TIMESTAMP_FIELDS[0])
+    updated = src.get(TIMESTAMP_FIELDS[1])
+    out[TIMESTAMP_FIELDS[0]] = created if isinstance(created, str) and created else now_iso
+    out[TIMESTAMP_FIELDS[1]] = updated if isinstance(updated, str) and updated else now_iso
 
-def set_base_days(days: Iterable[int]) -> list[int]:
-    upd = _normalize_update({"base_days": list(days)})
+    return dict(out)
 
-    def _fn(db: Database, session: ClientSession):
-        _load_or_init(db, session)
-        res = _col(db).find_one_and_update(
-            {},
-            {"$set": upd},
-            session=session,
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-        return list(res.get("base_days", [])) if res else []
-    
-    try:
-        return with_tx(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InvalidPayloadError("dow must be 0..6")
-    
 
-def find_applicable_rules(dow: int, service_id: Optional[str] = None) -> list[dict]:
-    try:
-        d = int(dow)
-        if d < 0 or d > 6:
-            raise ValueError
-    except Exception:
-        raise InvalidPayloadError("dow must be 0..6") 
-    
-    def _fn(db: Database, session: ClientSession):
-        doc = _load_or_init(db, session)
-        rules: list[dict] = list(doc.get("rules", []))
-        out: list[dict] = []
-        for r in rules:
-            r_dows = r.get("dow") or []
-            if d not in r_dows:
-                continue
-            svc = r.get("services")
-            if service_id and isinstance(svc, list) and svc:
-                if service_id not in svc:
-                    continue
-            out.append(r)
-        out.sort(key=lambda x: (str(x.get("start", "00:00")), str(x.get("end", "00:00"))))
-        return out
-    
-    try:
-        return with_session(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e

@@ -1,166 +1,169 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+import re
+from copy import deepcopy
+from typing import Any, Dict, Mapping, MutableMapping, Optional
 
-from bson import ObjectId
-from pymongo import ASCENDING, IndexModel
-from pymongo.collection import Collection
-from pymongo.database import Database
+from app.config import load_config
+from app.models.base import TIMESTAMP_FIELDS
+from app.utils.time import isoformat_utc, now_utc
 
-from app.core.constants import LANG_KO, SUPPORTED_LANGS, UserRole
-from app.models.base import BaseModel
-from app.utils.phone import normalize_kr as normalize_phone
+try:
+    # expected single-source phone normalizer
+    from app.utils.phone import normalize_phone as _normalize_phone  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover
+    _normalize_phone = None  # fallback defined below
 
-UTC = timezone.utc
-COLLECTION = "users"
 
 __all__ = [
-    "COLLECTION",
-    "ensure_indexes",
-    "get_collection",
-    "User",
+    "collection_name",
+    "schema_fields",
+    "indexes",
+    "normalize_user",
+]
+
+collection_name = "users"
+
+schema_fields: Dict[str, Any] = {
+    "id": {"type": "objectid?", "readonly": True},
+    "role": {"type": "string", "enum": ["customer", "admin"], "default": "customer"},
+    "name": {"type": "string?", "max": 200},
+    "email": {"type": "string", "lowercase": True, "required": True},
+    "phone": {"type": "string", "required": True, "format": "+82-##-####-####"},
+    "lang_pref": {"type": "string", "enum": ["ko", "en"], "default": load_config().default_lang},
+    "channels": {
+        "type": "object",
+        "schema": {
+            "email": {"enabled": {"type": "bool", "default": True}, "verified_at": {"type": "string?", "format": "iso8601"}},
+            "sms": {"enabled": {"type": "bool", "default": False}},
+            "kakao": {"enabled": {"type": "bool", "default": False}},
+        },
+        "default": {},
+    },
+    "consents": {
+        "type": "object",
+        "schema": {
+            "tos_at": {"type": "string?", "format": "iso8601"},
+            "privacy_at": {"type": "string?", "format": "iso8601"},
+        },
+        "default": {},
+    },
+    "is_active": {"type": "bool", "default": True},
+    "last_login_at": {"type": "string?", "format": "iso8601"},
+    TIMESTAMP_FIELDS[0]: {"type": "string?", "format": "iso8601"},
+    TIMESTAMP_FIELDS[1]: {"type": "string?", "format": "iso8601"},
+}
+
+indexes = [
+    {"keys": [("email", 1)], "options": {"name": "email_1", "background": True}},
+    {"keys": [("phone", 1)], "options": {"name": "phone_1", "background": True}},
+    {"keys": [("name", 1)], "options": {"name": "name_1", "background": True}},
 ]
 
 
-def get_collection(db: Database) -> Collection:
-    return db[COLLECTION]
+class UserPayloadError(ValueError):
+    code = "ERR_INVALID_PAYLOAD"
 
 
-def ensure_indexes(db: Database) -> None:
-    col = get_collection(db)
-    col.create_indexes(
-        [
-            IndexModel([("email", ASCENDING)], name="uniq_email", unique=True, partialFilterExpression={"email": {"$type": "string"}}),
-            IndexModel([("phone", ASCENDING)], name="uniq_phone", unique=True, partialFilterExpression={"phone": {"$type": "string"}}),
-            IndexModel([("name", ASCENDING)], name="idx_name"),
-        ]
-    )
+def _clean_email(v: str) -> str:
+    if not isinstance(v, str):
+        raise UserPayloadError("email must be string")
+    e = v.strip().lower()
+    if not e or "@" not in e or e.startswith("@") or e.endswith("@"):
+        raise UserPayloadError("invalid email format")
+    return e
 
 
-def _iso_to_utc(v: Any) -> datetime:
-    if v is None:
+def _fallback_normalize_phone_kr(v: str) -> str:
+    s = re.sub(r"[^\d]", "", v or "")
+    if s.startswith("82"):
+        s = s[2:]
+    if s.startswith("0"):
+        s = s[1:]
+    # expect mobile 10~11 digits after stripping leading 0: 10######## or 10#########
+    if not (s.startswith("10") and len(s) in (9, 10, 11)):  # tolerate some variants
+        raise UserPayloadError("invalid KR phone")
+    # pad if needed
+    if len(s) == 9:
+        s = "0" + s  # very defensive; keep structure
+    if len(s) == 10:
+        mid = s[2:6]
+        tail = s[6:]
+    else:
+        mid = s[2:6] if len(s) == 11 else s[2:6]
+        tail = s[6:]
+    return f"+82-10-{mid}-{tail}"
+
+
+def _normalize_phone(v: str) -> str:
+    if _normalize_phone is not None:  # type: ignore[truthy-function]
+        try:
+            return _normalize_phone(v)  # type: ignore[misc]
+        except Exception as e:  # pragma: no cover
+            raise UserPayloadError(str(e))
+    return _fallback_normalize_phone_kr(v)
+
+
+def _bool(v: Optional[Any], default: bool) -> bool:
+    if isinstance(v, bool):
         return v
-    if isinstance(v, datetime):
-        return v.replace(tzinfo=UTC) if v.tzinfo is None else v.astimezone(UTC)
-    s = str(v).strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    dt = datetime.fromisoformat(s)
-    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+    if v is None:
+        return default
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(v)
 
 
-def _norm_email(email: Optional[str]) -> Optional[str]:
-    if email is None:
-        return None
-    e = email.strip().lower()
-    return e or None
+def _now_iso() -> str:
+    return isoformat_utc(now_utc())
 
 
-def _norm_lang(lang: Optional[str]) -> str:
-    l = (lang or "").strip().lower()
-    return l if l in SUPPORTED_LANGS else LANG_KO
+def normalize_user(doc: Mapping[str, Any]) -> Dict[str, Any]:
+    if not isinstance(doc, Mapping):
+        raise UserPayloadError("document must be a mapping/dict")
 
+    cfg = load_config()
+    out: MutableMapping[str, Any] = deepcopy(dict(doc))
 
-def _norm_channels(ch: Optional[dict]) -> dict:
-    base = {
-        "email": {"enabled": False},
-        "sms": {"enabled": False},
-        "kakao": {"enabled": False},
+    out["email"] = _clean_email(out.get("email", ""))
+    out["phone"] = _normalize_phone(out.get("phone", ""))
+
+    name = out.get("name")
+    if isinstance(name, str):
+        out["name"] = name.strip() or None
+
+    lang = str(out.get("lang_pref") or "").strip().lower()
+    out["lang_pref"] = lang if lang in {"ko", "en"} else cfg.default_lang
+
+    role = str(out.get("role") or "customer").strip().lower()
+    out["role"] = role if role in {"customer", "admin"} else "customer"
+
+    channels = dict(out.get("channels") or {})
+    email_ch = dict(channels.get("email") or {})
+    sms_ch = dict(channels.get("sms") or {})
+    kakao_ch = dict(channels.get("kakao") or {})
+
+    channels_norm = {
+        "email": {
+            "enabled": _bool(email_ch.get("enabled"), True),
+            "verified_at": email_ch.get("verified_at") or None,
+        },
+        "sms": {"enabled": _bool(sms_ch.get("enabled"), False)},
+        "kakao": {"enabled": _bool(kakao_ch.get("enabled"), False)},
     }
-    if not isinstance(ch, dict):
-        return base
-    out = dict(base)
-    for k in ("email", "sms", "kakao"):
-        v = ch.get(k, {})
-        if isinstance(v, dict):
-            enabled = bool(v.get("enabled", False))
-            out[k] = {"enabled": enabled}
-            if k == "email" and v.get("verified_at") is not None:
-                out[k]["verified_at"] = _iso_to_utc(v.get("verified_at"))
-    return out
+    out["channels"] = channels_norm
 
+    consents = dict(out.get("consents") or {})
+    out["consents"] = {
+        "tos_at": consents.get("tos_at") or None,
+        "privacy_at": consents.get("privacy_at") or None,
+    }
 
-class User(BaseModel):
-    def __init__(self, doc: Optional[dict[str, Any]] = None):
-        super().__init__(doc or {})
+    out["is_active"] = _bool(out.get("is_active"), True)
 
-    @staticmethod
-    def prepare_new(payload: dict[str, Any]) -> dict[str, Any]:
-        doc: dict[str, Any] = {}
+    # timestamps are applied by model base helpers at repository layer; keep here if absent for idempotent upserts
+    for f in TIMESTAMP_FIELDS:
+        if not out.get(f):
+            out[f] = _now_iso()
 
-        _id = payload.get("_id") or payload.get("id")
-        if _id:
-            doc["_id"] = ObjectId(str(_id)) if not isinstance(_id, ObjectId) else _id
-
-        name = (payload.get("name") or "").strip()
-        if name:
-            doc["name"] = name
-
-        email = _norm_email(payload.get("email"))
-        if email:
-            doc["email"] = email
-
-        phone = payload.get("phone")
-        if phone:
-            doc["phone"] = normalize_phone(str(콜))
-
-        role = str(payload.get("role") or UserRole.CUSTOMER)
-        doc["role"] = role if role in (UserRole.CUSTOMER, UserRole.ADMIN) else UserRole.CUSTOMER
-
-        doc["lang_pref"] = _norm_lang(payload.get("lang_pref"))
-
-        doc["channels"] = _norm_channels(payload.get("channels"))
-
-        consents = payload.get("consents") or {}
-        c_out: dict[str, Any] = {}
-        if consents.get("tos_at"):
-            c_out["tos_at"] = _iso_to_utc(consents.get("tos_at"))
-        if consents.get("privacy_at"):
-            c_out["privacy_at"] = _iso_to_utc(consents.get("privacy_at"))
-        if c_out:
-            doc["consents"] = c_out
-
-        if payload.get("last_login_at"):
-            doc["last_login_at"] = _iso_to_utc(payload.get("last_login_at"))
-
-        doc["is_active"] = bool(payload.get("is_active", True))
-
-        return User.stamp_new(doc)
-
-    @staticmethod
-    def prepare_update(partial: dict[str, Any]) -> dict[str, Any]:
-        upd: dict[str, Any] = {}
-        if "name" in partial:
-            upd["name"] = (partial.get("name") or "").strip()
-        if "email" in partial:
-            e = _norm_email(partial.get("email"))
-            if e is not None:
-                upd["email"] = e
-            else:
-                upd.pop("email", None)
-        if "phone" in partial:
-            p = partial.get("phone")
-            if p:
-                upd["phone"] = normalize_phone(str(p))
-        if "role" in partial:
-            r = str(partial.get("role") or "").strip()
-            if r in (UserRole.CUSTOMER, UserRole.ADMIN):
-                upd["role"] = r
-        if "lang_pref" in partial:
-            upd["lang_pref"] = _norm_lang(partial.get("lang_pref"))
-        if "channels" in partial:
-            upd["channels"] = _norm_channels(partial.get("channels"))
-        if "consents" in partial:
-            consents = partial.get("consents") or {}
-            c_out: dict[str, Any] = {}
-            if "tos_at" in consents and consents.get("tos_at") is not None:
-                c_out["tos_at"] = _iso_to_utc(consents.get("tos_at"))
-            if "privacy_at" in consents and consents.get("privacy_at") is not None:
-                c_out["privacy_at"] = _iso_to_utc(consents.get("privacy_at"))
-            upd["consents"] = c_out
-        if "last_login_at" in partial and partial.get("last_login_at") is not None:
-            upd["last_login_at"] = _iso_to_utc(partial.get("last_login_at"))
-        if "is_active" in partial:
-            upd["is_active"] = bool(partial.get("is_active"))
-        return User.stamp_update(upd)
+    return dict(out)

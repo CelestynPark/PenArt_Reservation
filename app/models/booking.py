@@ -1,212 +1,237 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional
 
-from pymongo import ASCENDING, IndexModel
-from pymongo.collection import Collection
-from pymongo.database import Database
+from app.models.base import TIMESTAMP_FIELDS
+from app.utils.time import isoformat_utc, now_utc
 
-from app.core.constants import BookingStatus, Source
-from app.models.base import BaseModel
-from app.utils.time import iso
-
-COLLECTION = "bookings"
-
-__all__ = ["COLLECTION", "get_collection", "ensure_indexes", "Booking"]
-
-
-def get_collection(db: Database) -> Collection:
-    return db[COLLECTION]
+__all__ = [
+    "collection_name",
+    "schema_fields",
+    "indexes",
+    "compute_end_at",
+    "normalize_booking",
+]
 
 
-def ensure_indexes(db: Database) -> None:
-    col = get_collection(db)
-    col.create_indexes(
-        [
-            IndexModel([("service_id", ASCENDING), ("start_at", ASCENDING)], unique=True, name="uq_service_start"),
-            IndexModel([("code", ASCENDING)], name="idx_code"),
-            IndexModel([("customer_id", ASCENDING), ("start_at", ASCENDING)], name="idx_customer_start"),
-        ]
-    )
+collection_name = "bookings"
+
+schema_fields: Dict[str, Any] = {
+    "id": {"type": "objectid?", "readonly": True},
+    "code": {"type": "string?", "index": True},
+    "customer_id": {"type": "string", "required": True},
+    "service_id": {"type": "string", "required": True},
+    "start_at": {"type": "string", "format": "iso8601", "required": True},  # UTC
+    "end_at": {"type": "string", "format": "iso8601"},  # UTC
+    "status": {
+        "type": "string",
+        "enum": ["requested", "confirmed", "completed", "canceled", "no_show"],
+        "default": "requested",
+    },
+    "note_customer": {"type": "string?"},
+    "note_internal": {"type": "string?"},
+    "uploads": {"type": "array", "items": {"type": "string"}, "default": []},
+    "policy_agreed_at": {"type": "string?", "format": "iso8601"},
+    "source": {"type": "string", "enum": ["web", "admin", "kakao"], "default": "web"},
+    "history": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "schema": {
+                "at": {"type": "string", "format": "iso8601"},
+                "by": {"type": "string?"},
+                "from": {
+                    "type": "string?",
+                    "enum": ["requested", "confirmed", "completed", "canceled", "no_show"],
+                },
+                "to": {
+                    "type": "string",
+                    "enum": ["requested", "confirmed", "completed", "canceled", "no_show"],
+                },
+                "reason": {"type": "string?"},
+            },
+        },
+        "default": [],
+    },
+    "reschedule_of": {"type": "string?"},
+    "canceled_reason": {"type": "string?"},
+    TIMESTAMP_FIELDS[0]: {"type": "string?", "format": "iso8601"},
+    TIMESTAMP_FIELDS[1]: {"type": "string?", "format": "iso8601"},
+}
+
+indexes = [
+    (
+        {"keys": [("service_id", 1), ("start_at", 1)], "options": {"name": "service_id_1_start_at_1", "unique": True, "background": True}}
+    ),
+    ({"keys": [("code", 1)], "options": {"name": "code_1", "background": True}}),
+    (
+        {
+            "keys": [("customer_id", 1), ("start_at", -1)],
+            "options": {"name": "customer_id_1_start_at_-1", "background": True},
+        }
+    ),
+    ({"keys": [("status", 1)], "options": {"name": "status_1", "background": True}}),
+    ({"keys": [("created_at", -1)], "options": {"name": "created_at_-1", "background": True}}),
+]
 
 
-UTC = timezone.utc
+class BookingPayloadError(ValueError):
+    code = "ERR_INVALID_PAYLOAD"
 
 
-def _parse_utc(v: Any) -> datetime:
-    if isinstance(v, datetime):
-        return (v.replace(tzinfo=UTC) if v.tzinfo is None else v.astimezone(UTC))
-    if isinstance(v, str):
-        s = v.strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(s)
-        except Exception:
-            raise ValueError("invalid datetime")
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt.astimezone(UTC)
-    raise ValueError("invalid datetime")
+ALLOWED_STATUS = {"requested", "confirmed", "completed", "canceled", "no_show"}
+ALLOWED_SOURCE = {"web", "admin", "kakao"}
+
+
+def _ensure_mapping(doc: Mapping) -> None:
+    if not isinstance(doc, Mapping):
+        raise BookingPayloadError("document must be a mapping/dict")
+
+
+def _clean_str(v: Any) -> Optional[str]:
+    return v.strip() if isinstance(v, str) else None
+
+
+def _now_iso() -> str:
+    return isoformat_utc(now_utc())
+
+
+@dataclass(frozen=True)
+class _IsoDT:
+    raw: str
+
+    @staticmethod
+    def parse(s: Any, field: str) -> _IsoDT:
+        if not isinstance(s, str) or not s:
+            raise BookingPayloadError(f"{field} must be ISO8601 string (UTC)")
+        # Do not fully parse with timezone libs here; keep lightweight schema-level guard.
+        # Accept the string and rely on upstream parser/validators where needed.
+        return _IsoDT(raw=s)
 
 
 def _norm_status(v: Any) -> str:
-    if v is None:
-        return BookingStatus.REQUESTED.value
-    try:
-        return BookingStatus(v).value
-    except Exception:
-        raise ValueError("invalid status")
-
-
-def _norm_source(v: Any) -> str:
-    if v is None:
-        return Source.WEB.value
-    try:
-        return Source(v).value
-    except Exception:
-        raise ValueError("invalid source")
-
-
-def _norm_str(v: Any, *, allow_empty: bool = True) -> Optional[str]:
-    if v is None:
-        return None
-    if not isinstance(v, str):
-        raise ValueError("invalid string")
+    if not isinstance(v, str) or v.strip() == "":
+        return "requested"
     s = v.strip()
-    if not allow_empty and not s:
-        raise ValueError("empty string not allowed")
+    if s not in ALLOWED_STATUS:
+        raise BookingPayloadError("status is invalid")
     return s
 
 
-def _norm_uploads(v: Any) -> list[Any]:
-    if v is None:
-        return []
-    if not isinstance(v, list):
-        raise ValueError("uploads must be list")
-    return v
+def _norm_source(v: Any) -> str:
+    if not isinstance(v, str) or v.strip() == "":
+        return "web"
+    s = v.strip()
+    if s not in ALLOWED_SOURCE:
+        raise BookingPayloadError("source is invalid")
+    return s
 
 
-def _norm_history_item(h: Any) -> dict[str, Any]:
-    if not isinstance(h, dict):
-        raise ValueError("history item must be object")
-    at = _parse_utc(h.get("at"))
-    by = _norm_str(h.get("by"), allow_empty=False)
-    fr = _norm_str(h.get("from"), allow_empty=False)
-    to = _norm_str(h.get("to"), allow_empty=False)
-    reason = _norm_str(h.get("reason")) if "reason" in h else None
-    out = {"at": at, "by": by, "from": fr, "to": to}
-    if reason is not None:
-        out["reason"] = reason
+def _norm_history(items: Iterable[Mapping[str, Any]] | None) -> list[Dict[str, Any]]:
+    out: list[Dict[str, Any]] = []
+    for i, h in enumerate(items or []):
+        if not isinstance(h, Mapping):
+            raise BookingPayloadError(f"history[{i}] must be an object")
+        at = _IsoDT.parse(h.get("at"), f"history[{i}].at").raw
+        to = _clean_str(h.get("to")) or ""
+        if to not in ALLOWED_STATUS:
+            raise BookingPayloadError(f"history[{i}].to is invalid")
+        fr = _clean_str(h.get("from"))
+        if fr is not None and fr not in ALLOWED_STATUS:
+            raise BookingPayloadError(f"history[{i}].from is invalid")
+        by = _clean_str(h.get("by"))
+        reason = _clean_str(h.get("reason"))
+        rec = {"at": at, "to": to}
+        if fr:
+            rec["from"] = fr
+        if by:
+            rec["by"] = by
+        if reason:
+            rec["reason"] = reason
+        out.append(rec)
     return out
 
 
-def _norm_history(v: Any) -> list[dict[str, Any]]:
-    if v is None:
-        return []
-    if not isinstance(v, list):
-        raise ValueError("history must be list")
-    items = [_norm_history_item(x) for x in v]
-    items.sort(key=lambda x: x["at"], reverse=True)
-    return items
+def compute_end_at(start_at_utc: datetime, duration_min: int) -> datetime:
+    if not isinstance(start_at_utc, datetime):
+        raise BookingPayloadError("start_at_utc must be a datetime")
+    try:
+        dur = int(duration_min)
+    except Exception as e:
+        raise BookingPayloadError("duration_min must be integer") from e
+    if dur <= 0:
+        raise BookingPayloadError("duration_min must be > 0")
+    return start_at_utc + timedelta(minutes=dur)
 
 
-class Booking(BaseModel):
-    def __init__(self, doc: Optional[dict[str, Any]] = None):
-        super().__init__(doc or {})
+def normalize_booking(doc: Mapping[str, Any]) -> Dict[str, Any]:
+    _ensure_mapping(doc)
+    src = deepcopy(dict(doc))
+    out: MutableMapping[str, Any] = {}
 
-    @staticmethod
-    def prepare_new(payload: dict[str, Any]) -> dict[str, Any]:
-        service_id = _norm_str(payload.get("service_id"), allow_empty=False)
-        customer_id = _norm_str(payload.get("customer_id"))  # optional at creation
-        start_at = _parse_utc(payload.get("start_at"))
-        end_at = _parse_utc(payload.get("end_at"))
-        policy_agreed_at = _parse_utc(payload.get("policy_agreed_at"))
+    # required ids
+    svc_id = _clean_str(src.get("service_id"))
+    if not svc_id:
+        raise BookingPayloadError("service_id is required")
+    out["service_id"] = svc_id
 
-        doc: dict[str, Any] = {
-            "service_id": service_id,
-            "customer_id": customer_id,
-            "start_at": start_at,
-            "end_at": end_at,
-            "policy_agreed_at": policy_agreed_at,
-            "status": _norm_status(payload.get("status")),
-            "source": _norm_source(payload.get("source")),
-            "code": _norm_str(payload.get("code")),
-            "note_customer": _norm_str(payload.get("note_customer")) or "",
-            "note_internal": _norm_str(payload.get("note_internal")) or "",
-            "uploads": _norm_uploads(payload.get("uploads")),
-            "history": _norm_history(payload.get("history")),
-            "reschedule_of": _norm_str(payload.get("reschedule_of")),
-            "canceled_reason": _norm_str(payload.get("canceled_reason")),
-        }
-        return Booking.stamp_new(doc)
+    cust_id = _clean_str(src.get("customer_id"))
+    if not cust_id:
+        raise BookingPayloadError("customer_id is required")
+    out["customer_id"] = cust_id
 
-    @staticmethod
-    def prepare_update(partial: dict[str, Any]) -> dict[str, Any]:
-        upd: dict[str, Any] = {}
+    # time fields (UTC strings)
+    start_at = _IsoDT.parse(src.get("start_at"), "start_at").raw
+    out["start_at"] = start_at
 
-        if "service_id" in partial:
-            upd["service_id"] = _norm_str(partial.get("service_id"), allow_empty=False)
+    end_at = src.get("end_at")
+    if end_at is not None:
+        out["end_at"] = _IsoDT.parse(end_at, "end_at").raw
 
-        if "customer_id" in partial:
-            upd["customer_id"] = _norm_str(partial.get("customer_id"))
+    # meta
+    code = _clean_str(src.get("code"))
+    if code:
+        out["code"] = code
 
-        if "start_at" in partial:
-            upd["start_at"] = _parse_utc(partial.get("start_at"))
+    out["status"] = _norm_status(src.get("status"))
+    out["source"] = _norm_source(src.get("source"))
 
-        if "end_at" in partial:
-            upd["end_at"] = _parse_utc(partial.get("end_at"))
+    note_customer = _clean_str(src.get("note_customer"))
+    if note_customer:
+        out["note_customer"] = note_customer
 
-        if "policy_agreed_at" in partial:
-            upd["policy_agreed_at"] = _parse_utc(partial.get("policy_agreed_at"))
+    note_internal = _clean_str(src.get("note_internal"))
+    if note_internal:
+        out["note_internal"] = note_internal
 
-        if "status" in partial:
-            upd["status"] = _norm_status(partial.get("status"))
+    uploads = []
+    for u in src.get("uploads") or []:
+        if isinstance(u, str) and u.strip():
+            uploads.append(u.strip())
+    out["uploads"] = uploads
 
-        if "source" in partial:
-            upd["source"] = _norm_source(partial.get("source"))
+    pol_agreed = src.get("policy_agreed_at")
+    if pol_agreed is not None:
+        out["policy_agreed_at"] = _IsoDT.parse(pol_agreed, "policy_agreed_at").raw
 
-        if "code" in partial:
-            upd["code"] = _norm_str(partial.get("code"))
+    reschedule_of = _clean_str(src.get("reschedule_of"))
+    if reschedule_of:
+        out["reschedule_of"] = reschedule_of
 
-        if "note_customer" in partial:
-            upd["note_customer"] = _norm_str(partial.get("note_customer")) or ""
+    canceled_reason = _clean_str(src.get("canceled_reason"))
+    if canceled_reason:
+        out["canceled_reason"] = canceled_reason
 
-        if "note_internal" in partial:
-            upd["note_internal"] = _norm_str(partial.get("note_internal")) or ""
+    out["history"] = _norm_history(src.get("history"))
 
-        if "uploads" in partial:
-            upd["uploads"] = _norm_uploads(partial.get("uploads"))
+    # timestamps
+    now_iso = _now_iso()
+    created = _clean_str(src.get(TIMESTAMP_FIELDS[0]))
+    updated = _clean_str(src.get(TIMESTAMP_FIELDS[1]))
+    out[TIMESTAMP_FIELDS[0]] = created or now_iso
+    out[TIMESTAMP_FIELDS[1]] = updated or now_iso
 
-        if "history" in partial:
-            upd["history"] = _norm_history(partial.get("history"))
-
-        if "reschedule_of" in partial:
-            upd["reschedule_of"] = _norm_str(partial.get("reschedule_of"))
-
-        if "canceled_reason" in partial:
-            upd["canceled_reason"] = _norm_str(partial.get("canceled_reason"))
-
-        return Booking.stamp_update(upd)
-
-    def to_dict(self, fields: Optional[list[str]] = None) -> dict[str, Any]:
-        d = super().to_dict(fields)
-        for k in ("start_at", "end_at", "policy_agreed_at"):
-            if k in self._doc and (fields is None or k in d):
-                d[k] = iso(_parse_utc(self._doc[k]))
-        if "history" in self._doc and (fields is None or "history" in d):
-            out_hist: list[dict[str, Any]] = []
-            for h in self._doc.get("history", []) or []:
-                at = iso(_parse_utc(h["at"]))
-                item = {**h, "at": at}
-                out_hist.append(item)
-            d["history"] = out_hist
-        return d
-
-    @staticmethod
-    def append_history(existing: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
-        hist = existing.get("history") or []
-        hist.append(_norm_history_item(entry))
-        hist.sort(key=lambda x: x["at"], reverse=True)
-        return {"history": hist}
+    return dict(out)

@@ -1,101 +1,136 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import os
+import secrets
 import time
-from hashlib import sha256
-from typing import List
+from typing import Optional, Tuple
 
-from flask import current_app, session
-from werkzeug.exceptions import Forbidden
+from flask import Response
 
-from app.core.constants import ErrorCode
+from app.config import load_config
 
-CSRF_TTL_SECONDS = 7200  # 2h
-_CSRF_SESSION_SALT_KEY = "_csrf_salt"
-_CSRF_USED_NONCES_KEY = "_csrf_used_nonces"
-_CSRF_VERSION = "v1"
+__all__ = [
+    "generate_csrf",
+    "verify_csrf",
+    "sign",
+    "verify",
+    "hash_password",
+    "check_password",
+    "set_secure_cookie",
+]
+
+_COOKIE_NAME = "csrf_token"
+_HEADER_NAME = "X-CSRF-Token"
+_CSRF_TTL_SECONDS = 7200
+_PBKDF2_ITER = 200_000
+_PBKDF2_ALGO = "sha256"
+_SALT_LEN = 16
 
 
-class SecurityError(Forbidden):
-    def __init__(self, description: str = "Forbidden"):
-        super().__init__(description=description)
-        self.error_code = ErrorCode.FORBIDDEN
-
-
-def _b64url(data: bytes) -> str:
+def _b64u(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _get_secret_key() -> bytes:
-    key = current_app.config.get("SECRET_KEY") or ""
-    if not isinstance(key, (bytes, bytearray)):
-        key = key.encode("utf-8")
-    if not key:
-        raise RuntimeError("SECRET_KEY is not configured")
-    return bytes(key)
+def _b64u_decode(data: str) -> bytes:
+    pad = "=" * ((4 - (len(data) % 4)) % 4)
+    return base64.urlsafe_b64decode((data + pad).encode("ascii"))
 
 
-def rand_token(n: int = 32) -> str:
-    return _b64url(os.urandom(max(16, int(n))))
+def _key() -> bytes:
+    return load_config().secret_key.encode("utf-8")
 
 
-def sign(data: bytes) -> str:
-    return _b64url(hmac.new(_get_secret_key(), data, sha256).digest())
+def _hmac(data: bytes) -> bytes:
+    return hmac.new(_key(), data, hashlib.sha256).digest()
 
 
-def verify(sig: str, data: bytes) -> bool:
+def _ts() -> int:
+    return int(time.time())
+
+
+def sign(value: str) -> str:
+    msg = value.encode("utf-8")
+    mac = _hmac(msg)
+    return _b64u(mac)
+
+
+def verify(value: str, signature: str) -> bool:
     try:
-        expected = sign(data)
-        return hmac.compare_digest(expected, sig)
+        expect = _hmac(value.encode("utf-8"))
+        got = _b64u_decode(signature)
+        return hmac.compare_digest(expect, got)
     except Exception:
         return False
 
 
-def _ensure_session_salt() -> str:
-    salt = session.get(_CSRF_SESSION_SALT_KEY)
-    if not salt:
-        salt = rand_token(32)
-        session[_CSRF_SESSION_SALT_KEY] = salt
-    return salt
-
-
-def _add_used_nonce(nonce: str) -> None:
-    used: List[str] = session.get(_CSRF_USED_NONCES_KEY, [])
-    if nonce in used:
-        raise SecurityError("CSRF token replay detected")
-    used.append(nonce)
-    # cap size to avoid unbounded growth
-    if len(used) > 50:
-        used = used[-50:]
-    session[_CSRF_USED_NONCES_KEY] = used
-
-
-def generate_csrf() -> str:
-    salt = _ensure_session_salt()
-    iat = str(int(time.time()))
-    nonce = rand_token(16)
-    payload = f"{_CSRF_VERSION}|{iat}|{nonce}|{salt}".encode("utf-8")
+def generate_csrf(session_id: str) -> str:
+    ts = str(_ts())
+    nonce = _b64u(secrets.token_bytes(16))
+    payload = f"{session_id}.{ts}.{nonce}"
     sig = sign(payload)
-    return ".".join([_CSRF_VERSION, iat, nonce, sig])
+    token = f"{_b64u(payload.encode('utf-8'))}.{sig}"
+    return token
 
 
-def validate_csrf(token: str) -> None:
-    if not token or token.count(".") != 3:
-        raise SecurityError("Invalid CSRF token format")
-    ver, iat_s, nonce, sig = token.split(".", 3)
-    if ver != _CSRF_VERSION:
-        raise SecurityError("CSRF token version mismatch")
+def _parse_csrf(token: str) -> Optional[Tuple[str, int, str, str]]:
     try:
-        iat = int(iat_s)
-    except ValueError:
-        raise SecurityError("Invalid CSRF timestamp")
-    now = int(time.time())
-    if now - iat > CSRF_TTL_SECONDS or iat > now + 60:
-        raise SecurityError("CSRF token expired")
-    salt = _ensure_session_salt()
-    payload = f"{ver}|{iat_s}|{nonce}|{salt}".encode("utf-8")
-    if not verify(sig, payload):
-        raise SecurityError("CSRF signature invalid")
-    _add_used_nonce(nonce)
+        enc_payload, sig = token.split(".", 1)
+        payload = _b64u_decode(enc_payload).decode("utf-8")
+        session_id, ts_str, nonce = payload.split(".", 2)
+        ts = int(ts_str)
+        return session_id, ts, nonce, sig
+    except Exception:
+        return None
+
+
+def verify_csrf(session_id: str, token: str) -> bool:
+    parsed = _parse_csrf(token)
+    if not parsed:
+        return False
+    sid, ts, _nonce, sig = parsed
+    if sid != session_id:
+        return False
+    if _ts() - ts > _CSRF_TTL_SECONDS:
+        return False
+    payload = f"{sid}.{ts}.{_nonce}"
+    return verify(payload, sig)
+
+
+def hash_password(pw: str) -> str:
+    salt = os.urandom(_SALT_LEN)
+    dk = hashlib.pbkdf2_hmac(_PBKDF2_ALGO, pw.encode("utf-8"), salt, _PBKDF2_ITER, dklen=32)
+    return f"pbkdf2-${_PBKDF2_ALGO}${_PBKDF2_ITER}${_b64u(salt)}${_b64u(dk)}"
+
+
+def check_password(pw: str, hashed: str) -> bool:
+    try:
+        scheme, algo, iter_s, salt_b64, dk_b64 = hashed.split("$", 4)
+        if scheme != "pbkdf2-" or algo != _PBKDF2_ALGO:
+            return False
+        iters = int(iter_s)
+        salt = _b64u_decode(salt_b64)
+        dk_expect = _b64u_decode(dk_b64)
+        dk = hashlib.pbkdf2_hmac(algo, pw.encode("utf-8"), salt, iters, dklen=len(dk_expect))
+        return hmac.compare_digest(dk, dk_expect)
+    except Exception:
+        return False
+
+
+def set_secure_cookie(resp: Response, name: str, value: str, max_age: int | None = None) -> None:
+    resp.set_cookie(
+        key=name,
+        value=value,
+        max_age=max_age,
+        httponly=True,
+        secure=True,
+        samesite="Lax",
+        path="/",
+    )
+
+# Convenience exports for consumers expecting the agreed names
+COOKIE_NAME = _COOKIE_NAME
+HEADER_NAME = _HEADER_NAME
+CSRF_TTL_SECONDS = _CSRF_TTL_SECONDS

@@ -1,244 +1,260 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
-from pymongo import ASCENDING, IndexModel
-from pymongo.collection import Collection
-from pymongo.database import Database
+from app.models.base import TIMESTAMP_FIELDS
+from app.utils.time import isoformat_utc, now_utc
 
-from app.models.base import BaseModel
-from app.utils.time import parse_kst_date
-
-COLLECTION = "availability"
-
-__all__ = ["COLLECTION", "get_collection", "ensure_indexes", "Availability"]
-
-
-def get_collection(db: Database) -> Collection:
-    return db[COLLECTION]
+__all__ = [
+    "collection_name",
+    "schema_fields",
+    "indexes",
+    "normalize_availability",
+]
 
 
-def ensure_indexes(db: Database) -> None:
-    col = get_collection(db)
-    col.create_indexes(
-        [
-            IndexModel([("updated_at", ASCENDING)], name="idx_updated_at"),
-        ]
-    )
+collection_name = "availability"
+
+schema_fields: Dict[str, Any] = {
+    "rules": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "schema": {
+                "dow": {"type": "array", "items": {"type": "int(0..6)"}},
+                "start": {"type": "string", "format": "HH:MM"},
+                "end": {"type": "string", "format": "HH:MM"},
+                "break": {
+                    "type": "array?",
+                    "items": {
+                        "type": "object",
+                        "schema": {
+                            "start": {"type": "string", "format": "HH:MM"},
+                            "end": {"type": "string", "format": "HH:MM"},
+                        },
+                    },
+                },
+                "slot_min": {"type": "int", "min": 1},
+                "services": {"type": "array?", "items": {"type": "string"}},
+            },
+        },
+        "default": [],
+    },
+    "exceptions": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "schema": {
+                "date": {"type": "string", "format": "YYYY-MM-DD"},
+                "is_closed": {"type": "bool", "default": False},
+                "blocks": {
+                    "type": "array?",
+                    "items": {
+                        "type": "object",
+                        "schema": {
+                            "start": {"type": "string", "format": "HH:MM"},
+                            "end": {"type": "string", "format": "HH:MM"},
+                        },
+                    },
+                },
+            },
+        },
+        "default": [],
+    },
+    "base_days": {"type": "array", "items": {"type": "int(0..6)"}},
+    TIMESTAMP_FIELDS[0]: {"type": "string?", "format": "iso8601"},
+    TIMESTAMP_FIELDS[1]: {"type": "string?", "format": "iso8601"},
+}
+
+indexes = [
+    # Optional helper if rule-level service filtering becomes hot
+    {"keys": [("rules.services", 1)], "options": {"name": "rules.services_1", "background": True}},
+]
 
 
-def _is_hhmm(v: Any) -> bool:
-    if not isinstance(v, str) or len(v) != 5 or v[2] != ":":
-        return False
-    hh, mm = v[:2], v[3:]
-    if not (hh.isdigit() and mm.isdigit()):
-        return False
-    h, m = int(hh), int(mm)
-    return 0 <= h <= 23 and 0 <= m <= 59
+class AvailabilityPayloadError(ValueError):
+    code = "ERR_INVALID_PAYLOAD"
 
 
-def _hhmm_to_min(v: str) -> int:
-    if not _is_hhmm(v):
-        raise ValueError("invalid time format HH:MM")
-    h, m = int(v[:2]), int(v[3:])
-    return h * 60 + m
+def _ensure_mapping(doc: Mapping) -> None:
+    if not isinstance(doc, Mapping):
+        raise AvailabilityPayloadError("document must be a mapping/dict")
 
 
-def _slot_min(v: Any) -> int:
-    if isinstance(v, bool):
-        raise ValueError("slot_min invalid")
+def _now_iso() -> str:
+    return isoformat_utc(now_utc())
+
+
+def _norm_int(v: Any, field: str, min_value: Optional[int] = None, max_value: Optional[int] = None) -> int:
     try:
-        n = int(v)
-    except Exception:
-        raise ValueError("slot_min invalid")
-    if n < 15 or n % 15 != 0:
-        raise ValueError("slot_min must be >=15 and a multiple of 15")
-    return n
+        iv = int(v)
+    except Exception as e:
+        raise AvailabilityPayloadError(f"{field} must be integer") from e
+    if min_value is not None and iv < min_value:
+        raise AvailabilityPayloadError(f"{field} must be ≥ {min_value}")
+    if max_value is not None and iv > max_value:
+        raise AvailabilityPayloadError(f"{field} must be ≤ {max_value}")
+    return iv
 
 
-def _norm_dow_list(v: Any) -> list[int]:
-    if not isinstance(v, list) or not v:
-        raise ValueError("dow must be non-empty list")
-    out: list[int] = []
-    for x in v:
-        try:
-            i = int(x)
-        except Exception:
-            raise ValueError("dow must be integers 0..6")
-        if i < 0 or i > 6:
-            raise ValueError("dow must be in 0..6")
-        out.append(i)
-    # keep order but remove exact duplicates while preserving first occurrence
+def _norm_bool(v: Any) -> bool:
+    return bool(v) if isinstance(v, bool) else False
+
+
+def _norm_unique_sorted_ints(items: Iterable[Any], field: str, min_value: int, max_value: int) -> List[int]:
     seen = set()
-    dedup: list[int] = []
-    for i in out:
-        if i not in seen:
-            dedup.append(i)
-            seen.add(i)
-    return dedup
-
-
-def _norm_services(v: Any) -> list[str]:
-    if v is None:
-        return []
-    if not isinstance(v, list):
-        raise ValueError("services must be list")
-    out: list[str] = []
-    for s in v:
-        if not isinstance(s, str) or s.strip() == "":
-            raise ValueError("service_id must be string")
-        out.append(s.strip())
+    out: List[int] = []
+    for x in items or []:
+        iv = _norm_int(x, field, min_value=min_value, max_value=max_value)
+        if iv not in seen:
+            seen.add(iv)
+            out.append(iv)
+    out.sort()
     return out
 
 
-def _norm_breaks(v: Any, window_start_min: int, window_end_min: int) -> list[dict[str, str]]:
-    if v is None:
-        return []
-    if not isinstance(v, list):
-        raise ValueError("break must be list")
-    out: list[dict[str, str]] = []
-    for b in v:
-        if not isinstance(b, dict):
-            raise ValueError("break item must be object")
-        s, e = b.get("start"), b.get("end")
-        if not (_is_hhmm(s) and _is_hhmm(e)):
-            raise ValueError("break time must be HH:MM")
-        sm, em = _hhmm_to_min(s), _hhmm_to_min(e)
-        if not (sm < em):
-            raise ValueError("break start must be before end")
-        if sm < window_start_min or em > window_end_min:
-            raise ValueError("break must be within rule window")
-        out.append({"start": f"{s[:2]}:{s[3:]}", "end": f"{e[:2]}:{e[3:]}"})
+@dataclass(frozen=True)
+class _HM:
+    h: int
+    m: int
+
+    def minutes(self) -> int:
+        return self.h * 60 + self.m
+
+    def __str__(self) -> str:
+        return f"{self.h:02d}:{self.m:02d}"
+
+
+def _parse_hhmm(s: Any, field: str) -> _HM:
+    if not isinstance(s, str) or len(s) != 5 or s[2] != ":":
+        raise AvailabilityPayloadError(f"{field} must be HH:MM")
+    hh, mm = s[:2], s[3:]
+    try:
+        h = int(hh)
+        m = int(mm)
+    except Exception as e:
+        raise AvailabilityPayloadError(f"{field} must be HH:MM") from e
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise AvailabilityPayloadError(f"{field} out of range")
+    return _HM(h, m)
+
+
+def _ensure_start_before_end(start: _HM, end: _HM, field_prefix: str) -> None:
+    if start.minutes() >= end.minutes():
+        raise AvailabilityPayloadError(f"{field_prefix}.start must be earlier than {field_prefix}.end")
+
+
+def _norm_breaks(items: Iterable[Mapping[str, Any]] | None, field_prefix: str) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for i, b in enumerate(items or []):
+        if not isinstance(b, Mapping):
+            raise AvailabilityPayloadError(f"{field_prefix}[{i}] must be an object")
+        s = _parse_hhmm(b.get("start"), f"{field_prefix}[{i}].start")
+        e = _parse_hhmm(b.get("end"), f"{field_prefix}[{i}].end")
+        _ensure_start_before_end(s, e, f"{field_prefix}[{i}]")
+        out.append({"start": str(s), "end": str(e)})
     return out
 
 
-def _norm_blocks(v: Any) -> list[dict[str, str]]:
-    if v is None:
-        return []
-    if not isinstance(v, list):
-        raise ValueError("blocks must be list")
-    out: list[dict[str, str]] = []
-    for b in v:
-        if not isinstance(b, dict):
-            raise ValueError("block item must be object")
-        s, e = b.get("start"), b.get("end")
-        if not (_is_hhmm(s) and _is_hhmm(e)):
-            raise ValueError("block time must be HH:MM")
-        sm, em = _hhmm_to_min(s), _hhmm_to_min(e)
-        if not (sm < em):
-            raise ValueError("block start must be before end")
-        out.append({"start": f"{s[:2]}:{s[3:]}", "end": f"{e[:2]}:{e[3:]}"})
+def _unique_trimmed_strings(items: Iterable[Any]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for x in items or []:
+        if not isinstance(x, str):
+            continue
+        t = x.strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
     return out
 
 
-def _norm_rule(v: Any) -> dict[str, Any]:
-    if not isinstance(v, dict):
-        raise ValueError("rule must be object")
-    dow = _norm_dow_list(v.get("dow"))
-    start, end = v.get("start"), v.get("end")
-    if not (_is_hhmm(start) and _is_hhmm(end)):
-        raise ValueError("rule time must be HH:MM")
-    sm, em = _hhmm_to_min(start), _hhmm_to_min(end)
-    if not (sm < em):
-        raise ValueError("rule start must be before end")
-    slot = _slot_min(v.get("slot_min"))
-    brks = _norm_breaks(v.get("break"), sm, em)
-    services = _norm_services(v.get("services"))
-    return {
-        "dow": dow,
-        "start": f"{start[:2]}:{start[3:]}",
-        "end": f"{end[:2]}:{end[3:]}",
-        "break": brks,
-        "slot_min": slot,
-        "services": services if services else None,
-    }
+def _norm_rules(rules: Iterable[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, r in enumerate(rules or []):
+        if not isinstance(r, Mapping):
+            raise AvailabilityPayloadError(f"rules[{idx}] must be an object")
+        dow = _norm_unique_sorted_ints(r.get("dow") or [], f"rules[{idx}].dow", 0, 6)
+        if not dow:
+            raise AvailabilityPayloadError(f"rules[{idx}].dow must have at least one day")
+        start = _parse_hhmm(r.get("start"), f"rules[{idx}].start")
+        end = _parse_hhmm(r.get("end"), f"rules[{idx}].end")
+        _ensure_start_before_end(start, end, f"rules[{idx}]")
+        slot_min = _norm_int(r.get("slot_min"), f"rules[{idx}].slot_min", min_value=1)
+        brks = _norm_breaks(r.get("break"), f"rules[{idx}].break")
+        services = _unique_trimmed_strings(r.get("services") or [])
+        out.append(
+            {
+                "dow": dow,
+                "start": str(start),
+                "end": str(end),
+                "break": brks,
+                "slot_min": slot_min,
+                "services": services or None,
+            }
+        )
+    return out
 
 
-def _norm_exception(v: Any) -> dict[str, Any]:
-    if not isinstance(v, dict):
-        raise ValueError("exception must be object")
-    date_raw = v.get("date")
-    if not isinstance(date_raw, str):
-        raise ValueError("exception.date must be string")
-    d = parse_kst_date(date_raw)
-    date_norm = d.strftime("%Y-%m-%d")
-    is_closed = bool(v.get("is_closed", False))
-    blocks = _norm_blocks(v.get("blocks"))
-    return {"date": date_norm, "is_closed": is_closed, "blocks": blocks}
+def _norm_blocks(blocks: Iterable[Mapping[str, Any]] | None, field_prefix: str) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for i, b in enumerate(blocks or []):
+        if not isinstance(b, Mapping):
+            raise AvailabilityPayloadError(f"{field_prefix}[{i}] must be an object")
+        s = _parse_hhmm(b.get("start"), f"{field_prefix}[{i}].start")
+        e = _parse_hhmm(b.get("end"), f"{field_prefix}[{i}].end")
+        _ensure_start_before_end(s, e, f"{field_prefix}[{i}]")
+        out.append({"start": str(s), "end": str(e)})
+    return out
 
 
-class Availability(BaseModel):
-    def __init__(self, doc: Optional[dict[str, Any]] = None):
-        super().__init__(doc or {})
+def _parse_yyyy_mm_dd(s: Any, field: str) -> str:
+    if not isinstance(s, str) or len(s) != 10 or s[4] != "-" or s[7] != "-":
+        raise AvailabilityPayloadError(f"{field} must be YYYY-MM-DD")
+    y, m, d = s.split("-")
+    try:
+        yi = int(y)
+        mi = int(m)
+        di = int(d)
+    except Exception as e:
+        raise AvailabilityPayloadError(f"{field} must be YYYY-MM-DD") from e
+    if yi < 1970 or not (1 <= mi <= 12) or not (1 <= di <= 31):
+        raise AvailabilityPayloadError(f"{field} out of range")
+    return f"{yi:04d}-{mi:02d}-{di:02d}"
 
-    @staticmethod
-    def prepare_new(payload: dict[str, Any]) -> dict[str, Any]:
-        doc: dict[str, Any] = {}
 
-        rules_in = payload.get("rules") or []
-        if not isinstance(rules_in, list):
-            raise ValueError("rules must be list")
-        rules_out = [_norm_rule(r) for r in rules_in]
+def _norm_exceptions(ex: Iterable[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, e in enumerate(ex or []):
+        if not isinstance(e, Mapping):
+            raise AvailabilityPayloadError(f"exceptions[{idx}] must be an object")
+        date = _parse_yyyy_mm_dd(e.get("date"), f"exceptions[{idx}].date")
+        is_closed = _norm_bool(e.get("is_closed"))
+        blocks = _norm_blocks(e.get("blocks"), f"exceptions[{idx}].blocks")
+        out.append({"date": date, "is_closed": is_closed, "blocks": blocks or None})
+    return out
 
-        exc_in = payload.get("exceptions") or []
-        if not isinstance(exc_in, list):
-            raise ValueError("exceptions must be list")
-        exc_out = [_norm_exception(e) for e in exc_in]
 
-        base_days_in = payload.get("base_days") or []
-        if not isinstance(base_days_in, list):
-            raise ValueError("base_days must be list")
-        base_days: list[int] = []
-        seen = set()
-        for x in base_days_in:
-            try:
-                i = int(x)
-            except Exception:
-                raise ValueError("base_days must be integers 0..6")
-            if i < 0 or i > 6:
-                raise ValueError("base_days must be in 0..6")
-            if i not in seen:
-                base_days.append(i)
-                seen.add(i)
+def normalize_availability(doc: Mapping[str, Any]) -> Dict[str, Any]:
+    _ensure_mapping(doc)
+    src = deepcopy(dict(doc))
+    out: MutableMapping[str, Any] = {}
 
-        doc["rules"] = rules_out
-        doc["exceptions"] = exc_out
-        doc["base_days"] = base_days
+    base_days = _norm_unique_sorted_ints(src.get("base_days") or [], "base_days", 0, 6)
+    if not base_days:
+        raise AvailabilityPayloadError("base_days must have at least one day")
+    out["base_days"] = base_days
 
-        return Availability.stamp_new(doc)
+    out["rules"] = _norm_rules(src.get("rules"))
+    out["exceptions"] = _norm_exceptions(src.get("exceptions"))
 
-    @staticmethod
-    def prepare_update(partial: dict[str, Any]) -> dict[str, Any]:
-        upd: dict[str, Any] = {}
+    now_iso = _now_iso()
+    created = src.get(TIMESTAMP_FIELDS[0])
+    updated = src.get(TIMESTAMP_FIELDS[1])
+    out[TIMESTAMP_FIELDS[0]] = created if isinstance(created, str) and created else now_iso
+    out[TIMESTAMP_FIELDS[1]] = updated if isinstance(updated, str) and updated else now_iso
 
-        if "rules" in partial:
-            rules_in = partial.get("rules")
-            if not isinstance(rules_in, list):
-                raise ValueError("rules must be list")
-            upd["rules"] = [_norm_rule(r) for r in rules_in]
-
-        if "exceptions" in partial:
-            exc_in = partial.get("exceptions")
-            if not isinstance(exc_in, list):
-                raise ValueError("exceptions must be list")
-            upd["exceptions"] = [_norm_exception(e) for e in exc_in]
-
-        if "base_days" in partial:
-            base_days_in = partial.get("base_days")
-            if not isinstance(base_days_in, list):
-                raise ValueError("base_days must be list")
-            base_days: list[int] = []
-            seen = set()
-            for x in base_days_in:
-                try:
-                    i = int(x)
-                except Exception:
-                    raise ValueError("base_days must be integers 0..6")
-                if i < 0 or i > 6:
-                    raise ValueError("base_days must be in 0..6")
-                if i not in seen:
-                    base_days.append(i)
-                    seen.add(i)
-            upd["base_days"] = base_days
-
-        return Availability.stamp_update(upd)
+    return dict(out)

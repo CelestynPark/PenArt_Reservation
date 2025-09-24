@@ -1,0 +1,124 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "penart"
+version = "0.1.0"
+description = "Pen Art — Flask + MongoDB(Replica Set) + Jinja SSR"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Pen Art Team" }]
+keywords = ["flask", "mongodb", "jinja", "apscheduler", "korea", "ssr"]
+# 런타임 의존성은 requirements.txt로 고정 관리(중복 선언 금지)
+
+[project.optional-dependencies]
+dev = [
+  "black==24.8.0",
+  "isort==5.13.2",
+  "ruff==0.6.9",
+  "mypy==1.11.1",
+  "pytest==8.3.2",
+  "pytest-cov==5.0.0",
+  "types-requests==2.32.0.20240907",
+]
+
+[project.urls]
+homepage = "https://example.com/penart"
+repository = "https://example.com/penart/repo"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+# -----------------------------
+# Formatting / Linting
+# -----------------------------
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = "\\.pyi?$"
+exclude = """
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.ruff_cache
+  | \.venv
+  | build
+  | dist
+)/
+"""
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["app"]
+skip_gitignore = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "tests"]
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle
+  "F",   # pyflakes
+  "W",   # warnings
+  "I",   # isort
+  "B",   # bugbear
+  "UP",  # pyupgrade
+  "ISC", # implicit-str-concat
+  "PERF" # performance
+]
+ignore = [
+  "E203", # black과의 충돌
+  "E501", # line-length는 formatter가 책임
+  "W503", # black과의 충돌
+]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+# -----------------------------
+# Type Checking
+# -----------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+pretty = true
+show_error_codes = true
+ignore_missing_imports = true
+plugins = []
+
+# -----------------------------
+# Tests
+# -----------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q -ra"
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+# DB/시간대는 테스트 픽스처에서 KST↔UTC를 명시적으로 다룸
+
+# -----------------------------
+# Ruff Formatter (선택 사용 가능)
+# -----------------------------
+[tool.ruff.format]
+quote-style = "preserve"
+indent-style = "space"
+skip-magic-trailing-comma = false
+docstring-code-format = true

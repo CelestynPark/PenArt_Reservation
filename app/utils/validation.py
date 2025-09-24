@@ -1,125 +1,99 @@
 from __future__ import annotations
 
-import re
-from typing import Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from app.core.constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
-
-
-__all__ = (
+__all__ = [
     "ValidationError",
-    "require",
-    "one_of",
-    "is_email",
-    "is_phone_kr",
+    "require_fields",
     "validate_pagination",
-)
+    "validate_enum",
+]
+
+PAGE_DEFAULT = 20
+PAGE_MAX = 100
+_SORT_DIR_ALLOWED = {"asc", "desc"}
 
 
-class ValidationError(ValueError):
-    pass
+@dataclass(eq=False)
+class ValidationError(Exception):
+    message: str
+    field: Optional[str] = None
+    code: str = "ERR_INVALID_PAYLOAD"
+
+    def __str__(self) -> str:
+        if self.field:
+            return f"{self.field}: {self.message}"
+        return self.message
 
 
-_RE_EMAIL = re.compile(
-    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
-    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
-)
-
-# KR phone (mobile/landline), local or +82, separators -, space, or dot
-_RE_MOBILE_LOCAL = re.compile(r"^01[016789][\-\.\s]?\d{3,4}[\-\.\s]?\d{4}$")
-_RE_MOBILE_INTL = re.compile(r"^\+82[\-\.\s]?0?1[016789][\-\.\s]?\d{3,4}[\-\.\s]?\d{4}$")
-_RE_LAND_LOCAL = re.compile(r"^0\d{1,2}[\-\.\s]?\d{3,4}[\-\.\s]?\d{4}$")
-_RE_LAND_INTL = re.compile(r"^\+82[\-\.\s]?0?\d{1,2}[\-\.\s]?\d{3,4}[\-\.\s]?\d{4}$")
-
-# sort: field:asc|desc (letters, digits, underscore, dot)
-_RE_SORT = re.compile(r"^(?P<field>[A-Za-z0-9_.]+):(?P<dir>asc|desc)$", re.IGNORECASE)
-
-
-def _get(obj: Mapping, key: str):
-    if obj is None:
-        return None
+def _as_int(v: object, *, field: str, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
     try:
-        return obj[key]
-    except Exception:
-        return None
+        iv = int(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as e:
+        raise ValidationError("must be an integer", field) from e
+    if minimum is not None and iv < minimum:
+        raise ValidationError(f"must be >= {minimum}", field)
+    if maximum is not None and iv > maximum:
+        raise ValidationError(f"must be <= {maximum}", field)
+    return iv
 
 
-def require(obj: Mapping, *keys: str) -> None:
-    if obj is None:
-        raise ValidationError("payload required")
-    for k in keys:
-        if k not in obj:
-            raise ValidationError(f"missing field: {k}")
-        v = _get(obj, k)
-        if v is None:
-            raise ValidationError(f"null field: {k}")
-        if isinstance(v, str) and v.strip() == "":
-            raise ValidationError(f"empty field: {k}")
+def _is_missing(value: object) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
 
 
-def one_of(obj: Mapping, key: str, values: Sequence) -> None:
-    if key not in obj:
-        raise ValidationError(f"missing field: {key}")
-    v = _get(obj, key)
-    if v is None:
-        raise ValidationError(f"null field: {key}")
-    if v not in values:
-        raise ValidationError(f"invalid value for {key}")
+def require_fields(payload: Dict[str, object], fields: Sequence[str]) -> None:
+    if not isinstance(payload, dict):
+        raise ValidationError("payload must be an object")
+    for f in fields:
+        if f not in payload or _is_missing(payload.get(f)):
+            raise ValidationError("is required", f)
 
 
-def is_email(s: str) -> bool:
-    if not isinstance(s, str):
-        return False
-    return bool(_RE_EMAIL.match(s.strip()))
+def validate_enum(value: str, allowed: Iterable[str], field: str) -> None:
+    if value not in set(allowed):
+        raise ValidationError(f"must be one of {sorted(set(allowed))}", field)
 
 
-def is_phone_kr(s: str) -> bool:
-    if not isinstance(s, str):
-        return False
-    x = s.strip()
-    return bool(
-        _RE_MOBILE_LOCAL.match(x)
-        or _RE_MOBILE_INTL.match(x)
-        or _RE_LAND_LOCAL.match(x)
-        or _RE_LAND_INTL.match(x)
-    )
+def _parse_sort_item(item: str) -> Tuple[str, str]:
+    item = item.strip()
+    if not item:
+        raise ValidationError("invalid sort segment")
+    parts = item.split(":")
+    field = parts[0].strip()
+    direction = parts[1].strip().lower() if len(parts) > 1 else "asc"
+    if direction not in _SORT_DIR_ALLOWED:
+        raise ValidationError("sort direction must be 'asc' or 'desc'", "sort")
+    if not field:
+        raise ValidationError("sort field is empty", "sort")
+    return field, direction
 
 
-def validate_pagination(q: Mapping) -> Tuple[int, int, Optional[str]]:
-    page = 1
-    size = DEFAULT_PAGE_SIZE
-    sort: Optional[str] = None
+def validate_pagination(
+    q: Dict[str, object],
+    *,
+    default_size: int = PAGE_DEFAULT,
+    max_size: int = PAGE_MAX,
+    allowed_sort_fields: Optional[Iterable[str]] = None,
+) -> Tuple[int, int, List[Tuple[str, str]]]:
+    page_raw = q.get("page", 1)
+    size_raw = q.get("size", default_size)
+    page = _as_int(page_raw, field="page", minimum=1)
+    size = _as_int(size_raw, field="size", minimum=1, maximum=max_size)
 
-    raw_page = _get(q, "page")
-    raw_size = _get(q, "size")
-    raw_sort = _get(q, "sort")
-
-    try:
-        if raw_page is not None:
-            page = int(raw_page)
-    except Exception:
-        page = 1
-    if page < 1:
-        page = 1
-
-    try:
-        if raw_size is not None:
-            size = int(raw_size)
-    except Exception:
-        size = DEFAULT_PAGE_SIZE
-    if size < 1:
-        size = DEFAULT_PAGE_SIZE
-    if size > MAX_PAGE_SIZE:
-        size = MAX_PAGE_SIZE
-
-    if isinstance(raw_sort, str):
-        m = _RE_SORT.match(raw_sort.strip())
-        if m:
-            field = m.group("field")
-            # guard: no leading '$' or double dots
-            if not field.startswith("$") and ".." not in field:
-                direction = m.group("dir").lower()
-                sort = f"{field}:{direction}"
-
-    return page, size, sort
+    sort_list: List[Tuple[str, str]] = []
+    sort_raw = q.get("sort")
+    if sort_raw is not None:
+        if not isinstance(sort_raw, str):
+            raise ValidationError("sort must be a string like 'field:asc'", "sort")
+        segments = [s for s in (x.strip() for x in sort_raw.split(",")) if s]
+        if not segments:
+            raise ValidationError("sort is empty", "sort")
+        for seg in segments:
+            field, direction = _parse_sort_item(seg)
+            if allowed_sort_fields is not None:
+                if field not in set(allowed_sort_fields):
+                    raise ValidationError(f"unknown sort field '{field}'", "sort")
+            sort_list.append((field, direction))
+    return page, size, sort_list

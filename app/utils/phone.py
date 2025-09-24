@@ -1,101 +1,84 @@
 from __future__ import annotations
 
-import base64
-import hmac
-import os
-import time
-from hashlib import sha256
-from typing import List
+import re
+from dataclasses import dataclass
 
-from flask import current_app, session
-from werkzeug.exceptions import Forbidden
-
-from app.core.constants import ErrorCode
-
-CSRF_TTL_SECONDS = 7200  # 2h
-_CSRF_SESSION_SALT_KEY = "_csrf_salt"
-_CSRF_USED_NONCES_KEY = "_csrf_used_nonces"
-_CSRF_VERSION = "v1"
+__all__ = ["normalize_phone", "is_valid_phone", "mask_phone"]
 
 
-class SecurityError(Forbidden):
-    def __init__(self, description: str = "Forbidden"):
-        super().__init__(description=description)
-        self.error_code = ErrorCode.FORBIDDEN
+@dataclass(eq=False)
+class PhoneError(Exception):
+    message: str
+    code: str = "ERR_INVALID_PAYLOAD"
+
+    def __str__(self) -> str:
+        return self.message
 
 
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+_MOBILE_PREFIX = "010"
+_CC = "82"  # Korea
+_INTL_RE = re.compile(r"^\+?82")
+_DIGITS_RE = re.compile(r"\d+")
 
 
-def _get_secret_key() -> bytes:
-    key = current_app.config.get("SECRET_KEY") or ""
-    if not isinstance(key, (bytes, bytearray)):
-        key = key.encode("utf-8")
-    if not key:
-        raise RuntimeError("SECRET_KEY is not configured")
-    return bytes(key)
+def _digits(s: str) -> str:
+    return "".join(_DIGITS_RE.findall(s))
 
 
-def rand_token(n: int = 32) -> str:
-    return _b64url(os.urandom(max(16, int(n))))
+def _parse_to_national_10x8(s: str) -> str:
+    s = s.strip()
+    if not s:
+        raise PhoneError("empty phone number")
+    has_plus = s.startswith("+")
+    d = _digits(s)
+
+    if _INTL_RE.match(s):
+        # e.g. +82 10 1234 5678 or +82 010 1234 5678
+        if not d.startswith(_CC):
+            raise PhoneError("invalid country code")
+        rest = d[len(_CC) :]
+        if rest.startswith(_MOBILE_PREFIX):
+            rest = rest[1:]  # drop trunk '0' -> '10...'
+        if not rest.startswith("10"):
+            raise PhoneError("unsupported mobile prefix")
+        if len(rest) != 10:
+            raise PhoneError("invalid length for +82 number")
+        return rest  # '10' + 8 digits
+
+    # Domestic formats
+    if d.startswith(_MOBILE_PREFIX):
+        if len(d) != 11:
+            raise PhoneError("invalid length for domestic number")
+        return "1" + d[1:]  # '10' + 8 digits
+    if d.startswith("10") and len(d) == 10:
+        return d  # already '10' + 8 digits
+
+    raise PhoneError("unsupported phone format")
 
 
-def sign(data: bytes) -> str:
-    return _b64url(hmac.new(_get_secret_key(), data, sha256).digest())
+def normalize_phone(input_str: str) -> str:
+    """
+    Return '+82-10-1234-5678' for valid Korean mobile numbers.
+    """
+    national = _parse_to_national_10x8(input_str)
+    mid = national[2:6]
+    last = national[6:]
+    return f"+82-10-{mid}-{last}"
 
 
-def verify(sig: str, data: bytes) -> bool:
+def is_valid_phone(input_str: str) -> bool:
     try:
-        expected = sign(data)
-        return hmac.compare_digest(expected, sig)
-    except Exception:
+        _ = normalize_phone(input_str)
+        return True
+    except PhoneError:
         return False
 
 
-def _ensure_session_salt() -> str:
-    salt = session.get(_CSRF_SESSION_SALT_KEY)
-    if not salt:
-        salt = rand_token(32)
-        session[_CSRF_SESSION_SALT_KEY] = salt
-    return salt
-
-
-def _add_used_nonce(nonce: str) -> None:
-    used: List[str] = session.get(_CSRF_USED_NONCES_KEY, [])
-    if nonce in used:
-        raise SecurityError("CSRF token replay detected")
-    used.append(nonce)
-    # cap size to avoid unbounded growth
-    if len(used) > 50:
-        used = used[-50:]
-    session[_CSRF_USED_NONCES_KEY] = used
-
-
-def generate_csrf() -> str:
-    salt = _ensure_session_salt()
-    iat = str(int(time.time()))
-    nonce = rand_token(16)
-    payload = f"{_CSRF_VERSION}|{iat}|{nonce}|{salt}".encode("utf-8")
-    sig = sign(payload)
-    return ".".join([_CSRF_VERSION, iat, nonce, sig])
-
-
-def validate_csrf(token: str) -> None:
-    if not token or token.count(".") != 3:
-        raise SecurityError("Invalid CSRF token format")
-    ver, iat_s, nonce, sig = token.split(".", 3)
-    if ver != _CSRF_VERSION:
-        raise SecurityError("CSRF token version mismatch")
-    try:
-        iat = int(iat_s)
-    except ValueError:
-        raise SecurityError("Invalid CSRF timestamp")
-    now = int(time.time())
-    if now - iat > CSRF_TTL_SECONDS or iat > now + 60:
-        raise SecurityError("CSRF token expired")
-    salt = _ensure_session_salt()
-    payload = f"{ver}|{iat_s}|{nonce}|{salt}".encode("utf-8")
-    if not verify(sig, payload):
-        raise SecurityError("CSRF signature invalid")
-    _add_used_nonce(nonce)
+def mask_phone(input_str: str) -> str:
+    """
+    Return domestic masked format '010-****-1234'.
+    """
+    national = _parse_to_national_10x8(input_str)  # '10' + 8 digits
+    mid = national[2:6]
+    last = national[6:]
+    return f"010-{'*'*4}-{last}"

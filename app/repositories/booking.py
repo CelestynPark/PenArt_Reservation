@@ -1,305 +1,264 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
-from bson.objectid import ObjectId
-from pymongo import ASCENDING, DESCENDING, ReturnDocument, errors as pymongo_errors
-from pymongo.client_session import ClientSession
+from bson import ObjectId
+from pymongo import ReturnDocument
 from pymongo.collection import Collection
-from pymongo.database import Database
+from pymongo.client_session import ClientSession
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from app.repositories.common import (
-    with_session,
-    with_tx,
-    RepoError,
-    InternalError,
-    ConflictError
-)
-from app.models import booking as bk
+from app.repositories.common import get_collection, in_txn, map_pymongo_error
+from app.models.booking import normalize_booking, compute_end_at, BookingPayloadError
+from app.utils.time import isoformat_utc, now_utc
 
 __all__ = [
-    "create",
-    "get",
+    "create_booking",
+    "create_conflict",
+    "find_by_id",
     "list_by_customer",
-    "update_status",
-    "append_history",
-    "exists_conflict"
+    "list_by_range",
+    "transition",
+    "append_history"
 ]
 
 
-class InvalidPayloadError(RepoError):
-    code = "ERR_INVALID_PAYLOAD"
+class RepoError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+    
+def _bookings() -> Collection:
+    return get_collection("bookings")
 
 
-class NotFoundError(RepoError):
-    code = "ERR_NOT_FOUND"
+def _services() -> Collection:
+    return get_collection("services")
 
 
-# ----- internals -----
-def _col(db: Database) -> Collection:
-    return bk.get_collection(db)
+def _now_iso() -> str:
+    return isoformat_utc(now_utc())
 
 
-def _ensure_indexes(db: Database) -> None:
-    bk.ensure_indexes(db)
-
-
-def _normalize_new(payload: dict[str, Any]) -> dict[str, Any]:
+def _parse_iso_utc(s: str) -> datetime:
+    if not isinstance(s, str):
+        raise BookingPayloadError("datetime must be ISO8601 string")
     try:
-        return bk.Booking.prepare_new(payload)
+        if s.endswith("Z"):
+            dt = datetime.fromisoformat(s[:-1])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+        else:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+        return dt
     except Exception as e:
-        raise InvalidPayloadError(str(e)) from e
+        raise ValueError("invalid ISO8601 datetime") from e
     
 
-def _normalize_update(partial: dict[str, Any]) -> dict[str, Any]:
+def _object_id(old: str) -> ObjectId:
     try:
-        return bk.Booking.prepare_update(partial)
+        return ObjectId(old)
     except Exception as e:
-        raise InvalidPayloadError(str(e)) from e
+        raise RepoError("ERR_INVALID_PAYLOAD", "invalid id") from e
     
 
-def _normalize_dt(value: Union[str, datetime]) -> datetime:
-    # Use model's validator to avoid duplication
-    upd = _normalize_update({"start_at": value})
-    return upd["start_at"]
+def _page_args(page: int, size: int, max_size: int = 100) -> tuple[int, int]:
+    p = int(page) if isinstance(page, int) else 1
+    s = int(page) if isinstance(size, int) else 20
+    if p < 1:
+        p = 1
+    if s < 1:
+        s = 1
+    if s > max_size:
+        s = max_size
+    return p, s
 
 
-def _looks_like_code(value: str) -> bool:
-    return isinstance(value, str) and value.startswith("BKG-")
-
-
-def _find_one_by_id_or_code(
-    db: Database, id_or_code: str, *, session: Optional[ClientSession] = None
-) -> Optional[dict]:
-    q: dict[str, Any]
-    if _looks_like_code(id_or_code):
-        q = {"code": id_or_code}
-        doc = _col(db).find_one(q, session=session)
-        if doc:
-            return doc
-    # try application id field
-    q = {"id": id_or_code}
-    doc = _col(db).find_one(q, session=session)
-    if doc:
-        return doc
-    # try Mongo _id
-    try:
-        oid = ObjectId(id_or_code)
-        doc = _col(db).find_one({"_id": oid}, session=session)
-        if doc:
-            return doc
-    except Exception:
-        pass
+def _by_str(by: Dict[str,Any] | None) -> Optional[str]:
+    if not isinstance(by, dict):
+        return None
+    for k in ("id", "email", "name", "uid"):
+        v = by.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
     return None
 
 
-# ----- repository API -----
-def create(payload: dict[str, Any]) -> dict:
-    doc_norm = _normalize_new(payload)
-
-    def _fn(db: Database, session: ClientSession):
-        _ensure_indexes(db)
-        _col(db).insert_one(doc_norm, session=session)
-        # fetch inserted document by unique natural key (service_id + start_at) to return latest stamped fields
-        fetched = _col(db).find_one(
-            {"service_id": doc_norm["service_id"], "start_at": doc_norm["start_at"]},
-            session=session
-        )
-        if not fetched:
-            raise InternalError("inserted booking not found")
-        return bk.Booking(fetched).to_dict()
-    
+def create_booking(doc: Dict[str, Any], session: ClientSession | None = None) -> Dict[str, Any]:
     try:
-        return with_tx(_fn)
-    except ConflictError:
-        # re-raise as is (ERR_CONFLICT via common)
-        raise
+        payload = dict(doc or {})
+        # Ensure end_at exists (compute via service.duration_min if absent)
+        if not payload.get("end_at"):
+            svc_id = payload.get("service_id")
+            if not isinstance(svc_id, str) or svc_id.strip():
+                raise BookingPayloadError("service_id is required")
+            svc = _services().find_one({"_id": _object_id(svc_id)}) or {}
+            dur = int(svc.get("duration_min") or 0)
+            if dur <= 0:
+                raise BookingPayloadError("service.duration_min is required")
+            start_dt = _parse_iso_utc(payload.get("start_at"))
+            end_dt = compute_end_at(start_dt, dur)
+            payload["end_at"] = isoformat_utc(end_dt)
+
+        nb = normalize_booking(payload)
+
+        with in_txn(session) as e:
+            _bookings().insert_one(nb, session=s)
+            created = _bookings().find_one({"service_id": nb["service_id"], "start_at": nb["start_at"]}, session=s)
+            return created or nb
+    except DuplicateKeyError as e:
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], "booking conflict") from e
+    except BookingPayloadError as e:
+        raise RepoError("ERR_INVALID_PAYLOAD", str(e)) from e
+    except PyMongoError as e:
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], err["message"]) from e
+
+
+def check_conflict(service_id: str, start_at_utc: str) -> bool:
+    try:
+        cnt = _bookings().count_documents({"service_id": service_id, "start_at": start_at_utc}, limit=1)
+        return cnt > 0
+    except PyMongoError as e:
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], err["message"]) from e
+    
+
+def find_by_id(booking_id: str, customer_id: Optional[str] = None) -> Dict[str, Any] | None:
+    try:
+        filt: Dict[str, Any] = {"_id": _object_id(booking_id)}
+        if customer_id:
+            filt["customer_id"] = customer_id
+        return _bookings().find_one(filt)
     except RepoError:
         raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
+    except PyMongoError as e:
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], err["message"]) from e
     
 
-def get(id_or_code: str) -> dict:
-    def _fn(db: Database, session: ClientSession):
-        _ensure_indexes(db)
-        doc = _find_one_by_id_or_code(db, id_or_code, session=session)
-        if not doc:
-            raise NotFoundError("booking not found")
-        return bk.Booking(doc).to_dict()
-    
+def list_by_customer(customer_id: str, page: int = 1, size: int = 20) -> Dict[str, Any]:
     try:
-        return with_session(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
-    
-
-def list_by_customer(
-    customer_id: str,
-    date_range: Union[Tuple[Union[str, datetime], Union[str, datetime]], dict, None],
-    paging: Optional[dict[str, Any]] = None
-) -> dict:
-    # range on start_at (UTC). KST->UTC conversion is handled upstream.
-    start_dt: Optional[datetime] = None
-    end_dt: Optional[datetime] = None
-    if date_range:
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            start_dt = _normalize_dt(date_range[0]) if date_range[0] else None
-            end_dt = _normalize_dt(date_range[1]) if date_range[1] else None
-        elif isinstance(date_range, dict):
-            a = date_range.get("start") or date_range.get("from")
-            b = date_range.get("end") or date_range.get("to")
-            start_dt = _normalize_dt(a) if a else None
-            end_dt = _normalize_dt(b) if b else None
-        else:
-            raise InvalidPayloadError("invalid range")
-        
-    # paging
-    page = int((paging or {}).get("page", 1))
-    size = int((paging or {}).get("size", 20))
-    if page < 1:
-        page = 1
-    if size < 1:
-        size = 1
-    if size < 100:
-        size = 100
-    sort_spec = (paging or {}).get("sort") or "start_at:desc"
-    if isinstance(sort_spec, str) and ":" in sort_spec:
-        field, direction = sort_spec.split(":", 1)
-        direction = direction.lower()
-        mongo_dir = ASCENDING if direction == "asc" else DESCENDING
-    else:
-        field, mongo_dir = "start_at", DESCENDING
-    
-    def _fn(db: Database, session: ClientSession):
-        _ensure_indexes(db)
-        q: dict[str, Any] = {"customer_id", customer_id}
-        if start_dt or end_dt:
-            span: dict[str, Any] = {}
-            if start_dt:
-                span["#gte"] = start_dt
-            if end_dt:
-                span["$lte"] = end_dt
-            q["start_at"] = span
-        
-        total = _col(db).count_documents(q, session=session)
+        p, s = _page_args(page, size, 100)
+        filt = {"customer_id": customer_id}
+        total = _bookings().count_documents(filt)
         cursor = (
-            _col(db)
-            .find(q, session=session)
-            .sort(field, mongo_dir)
-            .skip((page - 1) * size)
-            .limit(size)
+            _bookings()
+            .find(filt)
+            .sort([("start_at", -1)])
+            .skip((p - 1) * s)
+            .limit(s)
         )
-        items = [bk.Booking(d).to_dict() for d in cursor]
-        return {"items": items, "total":total, "page": page, "size":size}
+        items = list(cursor)
+        return {"items": items, "total": total, "page": p, "size": s}
+    except PyMongoError as e:
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], err["message"]) from e
     
+
+def list_by_range(
+        service_id: Optional[str],
+        start_utc: str,
+        end_utc: str,
+        status: Optional[List[str]] = None,
+        page: int = 1,
+        size: int = 50
+) -> Dict[str, Any]:
     try:
-        return with_session(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
-
-
-def update_status(
-    booking_id: str,
-    from_status: str,
-    to_status: str,
-    *,
-    by: str,
-    reason: Optional[str] = None
-) -> dict:
-    if not (isinstance(booking_id, str) and isinstance(from_status, str) and isinstance(to_status, str)):
-        raise InvalidPayloadError("invalid payload")
-    if not by or not isinstance(by, str):
-        raise InvalidPayloadError("actor required")
+        p, s = _page_args(page, size, 200)
+        filt: Dict[str, Any] = {"start_at": {"$gte": start_utc}, "end_at": {"$lte": end_utc}}
+        if service_id:
+            filt["service_id"] = service_id
+        if status:
+            filt["status"] = {"$in": [x for x in status if isinstance(x, str) and x]}
+        total = _bookings().count_documents(filt)
+        cursor = (
+            _bookings()
+            .find(filt)
+            .sort([("start_at", 1)])
+            .skip((p - 1) * s)
+            .limit(s)
+        )
+        items = list(cursor)
+        return {"items": items, "total": total, "page": p, "size": s}
+    except PyMongoError as e:
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], err["message"]) from e
     
-    def _fn(db: Database, session: ClientSession):
-        _ensure_indexes(db)
-        current = _find_one_by_id_or_code(db, booking_id, session=session)
-        if not current:
-            raise NotFoundError("booking not found")
-        if str(current.get("status")) != from_status:
-            raise InvalidPayloadError("status mismatch")
-        
-        event: dict[str, Any] = {
-            "at": datetime.now(timezone.utc),
-            "by": by,
-            "from": from_status,
-            "to": to_status
-        }
+
+def transition(
+        booking_id: str,
+        from_status: str,
+        to_status: str,
+        by: Dict[str, Any],
+        reason: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+        session: ClientSession | None = None
+) -> Dict[str, Any]:
+    try:
+        now_iso = _now_iso()
+        ev: Dict[str, Any] = {"at": now_iso, "to": to_status}
+        if from_status:
+            ev["from"] = from_status
+        by_s = _by_str(by)
+        if by_s:
+            ev["by"] = by_s
         if reason:
-            event["reason"] = reason
-
-        history_upd = bk.Booking.append_history(current, event)
-        status_upd = _normalize_update({"status": to_status})
-        upd = {**status_upd, **history_upd}
-
-        res = _col(db).find_one_and_update(
-            {"id": current.get("id")},
-            {"$set": upd},
-            session=session,
-            return_document=ReturnDocument.AFTER
-        )
-        if not res:
-            raise InternalError("failed to update booking")
-        return bk.Booking(res).to_dict()
-    
-    try:
-        return with_tx(_fn)
+            ev["reason"] = reason
+        
+        set_fields: Dict[str, Any] = {"status": to_status, "updated_at": now_iso}
+        if reason and to_status == "canceled":
+            set_fields["canceled_reason"] = reason
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if k not in {"_id", "customer_id", "service_id", "start_at"}:
+                    set_fields[k] = v
+        
+        with in_txn(session) as s:
+            doc = _bookings().find_one_and_update(
+                {"_id": _object_id(booking_id), "status": from_status},
+                {"$set": set_fields, "$push": {"history": ev}},
+                return_document=ReturnDocument.AFTER,
+                session=s
+            )
+            if doc:
+                return doc
+            # Idempmotency: if already transitioned, just return current document
+            current = _bookings().find_one({"_id": _object_id(booking_id)}, session=s)
+            if current is None:
+                raise RepoError("ERR_NOT_FOUND", "booking not found")
+            return current
     except RepoError:
         raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
+    except PyMongoError as e:
+        # surface duplicate error (e.g., rare extra fields change causing unique clash)
+        if isinstance(e, DuplicateKeyError):
+            err = map_pymongo_error(e)
+            raise RepoError(err["code"], "duplicate_key") from e
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], err["message"]) from e
     
 
-def append_history(booking_id: str, event: dict[str, Any]) -> dict:
-    if not isinstance(booking_id, str) or not isinstance(event, dict):
-        raise InvalidPayloadError("invalid payload")
-    
-    def _fn(db: Database, session: ClientSession):
-        _ensure_indexes(db)
-        current = _find_one_by_id_or_code(db, booking_id, session=session)
-        if not current:
-            raise NotFoundError("booking not found")
-        history_upd = bk.Booking.append_history(current, event)
-        upd = _normalize_update(history_upd)
-        res = _col(db).find_one_and_update(
-            {"id": current.get("id")},
-            {"$set": upd},
-            session=session,
-            return_document=ReturnDocument.AFTER
-        )
-        if not res:
-            raise InternalError("failed to append history")
-        return bk.Booking(res).to_dict()
-    
+def append_history(booking_id: str, event: Dict[str, Any], session: ClientSession | None = None) -> bool:
     try:
-        return with_tx(_fn)
+        ev = dict(event or {})
+        if "at" not in ev or not isinstance(ev.get("at"), str):
+            ev["at"] = _now_iso()
+        res = _bookings().update_one({"_id": _object_id(booking_id)}, {"$push": {"history": ev}}, session=session)
+        return res.modified_count > 0
     except RepoError:
         raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
-    
-
-def exists_conflict(service_id: str, start_at: Union[str, datetime]) -> bool:
-    if not isinstance(service_id, str) or not service_id.strip():
-        raise InvalidPayloadError("service_id required")
-    dt = _normalize_dt(start_at)
-
-    def _fn(db: Database, session: ClientSession):
-        _ensure_indexes(db)
-        q = {"service_id": service_id, "start_at": dt}
-        doc = _col(db).find_one(q, projection={"_id": 1}, session=session)
-        return bool(doc)
-    
-    try:
-        return with_session(_fn)
-    except RepoError:
-        raise
-    except pymongo_errors.PyMongoError as e:
-        raise InternalError(str(e)) from e
+    except PyMongoError as e:
+        err = map_pymongo_error(e)
+        raise RepoError(err["code"], err["message"]) from e
     

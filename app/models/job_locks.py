@@ -1,128 +1,90 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import timedelta
+from typing import Any, Dict, List
 
-from pymongo import ASCENDING, IndexModel, ReturnDocument
-from pymongo.collection import Collection
-from pymongo.database import Database
-
-COLLECTION = "job_locks"
+from app.models.base import utc_now, ModelPayloadError
 
 __all__ = [
-    "COLLECTION",
-    "get_collection",
-    "ensure_indexes",
-    "acquire",
-    "renew",
-    "release",
-    "get"
+    "collection_name",
+    "schema_fields",
+    "indexes",
+    "acquire_lock",
+    "release_lock",
+    "is_locked",
 ]
 
+collection_name = "job_locks"
 
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+schema_fields: Dict[str, Any] = {
+    "id": {"type": "objectid?", "readonly": True},
+    "job_key": {"type": "string", "required": True},
+    "owner": {"type": "string", "required": True},
+    "expires_at": {"type": "date", "required": True},  # UTC
+    "created_at": {"type": "string", "format": "iso8601", "readonly": True},
+    "updated_at": {"type": "string", "format": "iso8601", "readonly": True},
+}
+
+indexes: List[Dict[str, Any]] = [
+    {
+        "keys": [("job_key", 1)],
+        "options": {"name": "uq_job_key", "unique": True, "background": True},
+    },
+    {
+        # TTL index: docs expire automatically once expires_at < now (Mongo handles UTC)
+        "keys": [("expires_at", 1)],
+        "options": {"name": "ttl_expires_at", "expireAfterSeconds": 0, "background": True},
+    },
+]
+
+# In-memory fallback store (tests/minimal runtime). Real deployment should use Mongo with the above indexes.
+_MEM: Dict[str, Dict[str, Any]] = {}
 
 
-def _future_utc(seconds: int) -> datetime:
-    if not isinstance(seconds, int) or seconds <= 0:
-        raise ValueError("ttl_seconds must be positive int")
-    return _now_utc() + timedelta(seconds=seconds)
+def _cleanup_expired() -> None:
+    now = utc_now()
+    expired = [k for k, v in _MEM.items() if v.get("expires_at") <= now]
+    for k in expired:
+        _MEM.pop(k, None)
 
 
-def get_collection(db: Database) -> Collection:
-    return db[COLLECTION]
-
-
-def ensure_indexes(db: Database) -> None:
-    col = get_collection(db)
-    col.create_indexes(
-        [
-            IndexModel([("job_key", ASCENDING)], name="uniq_job_key", unique=True),
-            IndexModel([("expires_at", ASCENDING)], name="ttl_expires_at", expireAfterSeconds=0)
-        ]
-    )
-
-
-def acquire(db: Database, *, job_key: str, owner: str, ttl_seconds: int) -> Optional[str]:
-    """
-    Try to acquire the lock for (job_key). Success when:
-    - lock is absent or expired, or
-    - lock is already owned by same owner (re-acquire/extend).
-    On success returns lock id (str), else None.
-    """
+def _validate(job_key: str, owner: str) -> None:
     if not isinstance(job_key, str) or not job_key.strip():
-        raise ValueError("job_key required")
+        raise ModelPayloadError("job_key required")
     if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("owner required")
-    now = _now_utc()
-    new_exp = _future_utc(ttl_seconds)
-
-    col = get_collection(db)
-    doc = col.find_one_and_update(
-        {
-            "job_key": job_key,
-            "$or": [
-                {"expires_at": {"$lte": now}},
-                {"owner": owner},
-                {"expires_at": {"$exists": False}}, # safety for first writes
-            ]
-        },
-        {
-            "$set": {"job_key": job_key, "owner": owner, "expires_at": new_exp},
-            "$setOnInsert": {"created_at": now}
-        },
-        upsert=True,
-        return_document=ReturnDocument.AFTER
-    )
-    # If another owner holds a non-expired lock, filter won't match -> doc is None
-    return str(doc["_id"]) if doc else None
+        raise ModelPayloadError("owner required")
 
 
-def renew(db: Database, *, job_key: str, owner: str, ttl_seconds: int) -> bool:
-    """
-    Extend expiration if the caller is the current owner and lock not expired.
-    Returns True if extended
-    """
+def acquire_lock(job_key: str, owner: str, ttl_sec: int) -> bool:
+    _validate(job_key, owner)
+    if not isinstance(ttl_sec, int) or ttl_sec <= 0:
+        raise ModelPayloadError("ttl_sec must be positive int")
+    _cleanup_expired()
+    now = utc_now()
+    rec = _MEM.get(job_key)
+    if rec is None or rec["expires_at"] <= now:
+        _MEM[job_key] = {"owner": owner, "expires_at": now + timedelta(seconds=ttl_sec)}
+        return True
+    if rec["owner"] == owner:
+        rec["expires_at"] = now + timedelta(seconds=ttl_sec)
+        _MEM[job_key] = rec
+        return True
+    return False
+
+
+def release_lock(job_key: str, owner: str) -> bool:
+    _validate(job_key, owner)
+    _cleanup_expired()
+    rec = _MEM.get(job_key)
+    if rec and rec["owner"] == owner:
+        _MEM.pop(job_key, None)
+        return True
+    return False
+
+
+def is_locked(job_key: str) -> bool:
     if not isinstance(job_key, str) or not job_key.strip():
-        raise ValueError("job_key required")
-    if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("owner required")
-    now = _now_utc()
-    new_exp = _future_utc(ttl_seconds)
-
-    col = get_collection(db)
-    res = col.find_one_and_update(
-        {"job_key": job_key, "owner": owner, "expires_at": {"$gt": now}},
-        {"$set": {"expires_at": new_exp}},
-        return_document=ReturnDocument.AFTER
-    )
-    return bool(res)
-
-
-def release(db: Database, *, job_key: str, owner: str) -> bool:
-    """
-    Release the lock only if owned by caller.
-    Returns True when a lock was released.
-    """
-    if not isinstance(job_key, str) or not job_key.strip():
-        raise ValueError("job_key required")
-    if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("owner required")
-    col = get_collection(db)
-    res = col.delete_one({"job_key": job_key, "owner": owner})
-    return res.deleted_count == 1
-
-
-def get(db: Database, *, job_key: str) -> Optional[dict]:
-    """
-    Fetch current lock document for inspection (UTC datetimes).
-    """
-    if not isinstance(job_key, str) or not job_key.strip():
-        raise ValueError("job_key required")
-    doc = get_collection(db).find_one({"job_key": job_key})
-    if not doc:
-        return None
-    # normalize id
-    doc["_id"] = str(doc.pop("_id"))
-    return doc
+        raise ModelPayloadError("job_key required")
+    _cleanup_expired()
+    rec = _MEM.get(job_key)
+    return bool(rec and rec["expires_at"] > utc_now())

@@ -1,162 +1,146 @@
 from __future__ import annotations
 
 from functools import wraps
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional, TypedDict
 
-from flask import Flask, Request, Response, current_app, g, request
+from flask import Response, g, jsonify, request
 
-from app.config import get_settings
-from app.core.constants import ErrorCode, UserRole
-from app.utils.responses import fail
-from app.utils.security import SecurityError, validate_csrf
+from app.config import load_config
+from app.utils.rate_limit import RateLimitError, check_rate_limit, rate_limit_key, remaining
+from app.utils.security import COOKIE_NAME as CSRF_COOKIE_NAME
+from app.utils.security import HEADER_NAME as CSRF_HEADER_NAME
+from app.utils.security import verify_csrf
 
-# Auth service contracts
-# - SESSION_COOKIE_NAME: str
-# - load_session(token: str) -> Optional[dict]   # returns None if invalid/expired
-# - logout_session(token: str) -> None           # idempotent
-from app.services.auth_service import (  # type: ignore[assignment]
-    SESSION_COOKIE_NAME,
-    load_session,
-    logout_session,
-)
-
-__all__ = ["init_auth", "login_required", "admin_required"]
+__all__ = [
+    "require_login",
+    "require_admin",
+    "csrf_protect",
+    "apply_rate_limit",
+    "current_user",
+]
 
 
-ADMIN_CSRF_EXEMPT = {"/api/admin/auth/login"}
-UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+class User(TypedDict):
+    id: str
+    role: str  # "customer" | "admin"
 
 
-def _should_check_csrf(req: Request) -> bool:
-    if req.method not in UNSAFE_METHODS:
-        return False
-    if not req.path.startswith("/api/admin"):
-        return False
-    if req.path in ADMIN_CSRF_EXEMPT:
-        return False
-    return True
+def _json_error(code: str, message: str, http_status: int) -> Response:
+    resp = jsonify({"ok": False, "error": {"code": code, "message": message}})
+    resp.status_code = http_status
+    return resp
 
 
-def _extract_csrf(req: Request) -> Optional[str]:
-    token = (
-        req.headers.get("X-CSRF-Token")
-        or req.headers.get("X-Csrf-Token")
-        or req.headers.get("X-CSRF")
+def _unauthorized(message: str = "Authentication required") -> Response:
+    return _json_error("ERR_UNAUTHORIZED", message, 401)
+
+
+def _forbidden(message: str = "Forbidden") -> Response:
+    return _json_error("ERR_FORBIDDEN", message, 403)
+
+
+def _rate_limited(message: str = "Too many requests") -> Response:
+    return _json_error("ERR_RATE_LIMIT", message, 429)
+
+
+def current_user() -> Optional[User]:
+    if getattr(g, "user", None):
+        return g.user  # type: ignore[return-value]
+    # Soft sources for tests/dev:
+    uid = (
+        request.headers.get("X-User-Id")
+        or request.cookies.get("uid")
+        or request.cookies.get("session_id")
+        or None
     )
-    if token:
-        return token
-    if req.mimetype == "application/json":
-        data = req.get_json(silent=True) or {}
-        return data.get("_csrf")
-    if req.form:
-        return req.form.get("_csrf")
+    role = (
+        request.headers.get("X-User-Role")
+        or request.cookies.get("role")
+        or request.headers.get("X-Role")
+        or None
+    )
+    if uid and role:
+        user: User = {"id": uid, "role": role}
+        g.user = user  # cache for request
+        return user
     return None
 
 
-def _clear_sid_cookie(resp: Response) -> None:
-    settings = get_settings()
-    resp.delete_cookie(
-        SESSION_COOKIE_NAME, path="/", samesite="Lax", secure=settings.is_production
-    )
+def require_login(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any):
+        user = current_user()
+        if not user:
+            return _unauthorized()
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
-def _load_current_session() -> None:
-    sid = request.cookies.get(SESSION_COOKIE_NAME)
-    g.authenticated = False
-    g.is_admin = False
-    g.user = None
-    g.user_id = None
-    g.role = None
-    g._auth_sid_present = bool(sid)
-    g._auth_clear_cookie = False
+def require_admin(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any):
+        user = current_user()
+        if not user:
+            return _unauthorized()
+        if (user.get("role") or "").lower() != "admin":
+            return _forbidden("Admin only")
+        return fn(*args, **kwargs)
 
-    if not sid:
-        return
-
-    sess = load_session(sid)
-    if not sess:
-        g._auth_clear_cookie = True
-        return
-
-    user = sess.get("user") or {}
-    role = (user.get("role") or sess.get("role") or "").lower()
-    g.user = user or None
-    g.user_id = user.get("id") if user else None
-    g.role = role or None
-    g.is_admin = role == UserRole.ADMIN.value
-    g.authenticated = True
+    return wrapper
 
 
-def _maybe_check_csrf() -> Optional[Response]:
-    if not _should_check_csrf(request):
-        return None
-    token = _extract_csrf(request)
-    try:
-        validate_csrf(token or "")
-    except SecurityError as e:
-        return fail(e.error_code, str(e), status=403)
-    return None
+def csrf_protect(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any):
+        method = (request.method or "GET").upper()
+        if method in {"POST", "PUT", "PATCH", "DELETE"}:
+            # Double-submit: SameSite cookie + header
+            header_token = request.headers.get(CSRF_HEADER_NAME, "")
+            cookie_token = request.cookies.get(CSRF_COOKIE_NAME, "")
+            if not header_token or not cookie_token:
+                return _forbidden("Missing CSRF token")
+            if header_token != cookie_token:
+                return _forbidden("Bad CSRF token")
+            # Bind token to session_id (or uid)
+            sid = (
+                request.cookies.get("session_id")
+                or request.headers.get("X-Session-Id")
+                or request.cookies.get("uid")
+                or ""
+            )
+            if not sid or not verify_csrf(sid, header_token):
+                return _forbidden("Invalid CSRF token")
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
-def login_required() -> Callable:
-    def decorator(fn: Callable) -> Callable:
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            if not getattr(g, "authenticated", False):
-                return fail(ErrorCode.UNAUTHORIZED, "인증이 필요합니다.", status=401)
-            need = _maybe_check_csrf()
-            if need is not None:
-                return need
-            return fn(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def admin_required() -> Callable:
-    def decorator(fn: Callable) -> Callable:
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            if not getattr(g, "authenticated", False):
-                return fail(ErrorCode.UNAUTHORIZED, "인증이 필요합니다.", status=401)
-            if not getattr(g, "is_admin", False):
-                return fail(ErrorCode.FORBIDDEN, "권한이 없습니다.", status=403)
-            need = _maybe_check_csrf()
-            if need is not None:
-                return need
-            return fn(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def init_auth(app: Flask) -> None:
-    settings = get_settings()
-
-    @app.before_request  # type: ignore[misc]
-    def _auth_before() -> None:
-        _load_current_session()
-
-    @app.after_request  # type: ignore[misc]
-    def _auth_after(resp: Response) -> Response:
-        # If session cookie existed but session is invalid/expired, log out and clear cookie.
+def apply_rate_limit(fn: Callable[..., Any], limit: Optional[int] = None) -> Callable[..., Any]:
+    @wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any):
+        cfg = load_config()
+        user = current_user()
+        user_id = (user or {}).get("id")
+        ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "-"
+        key = rate_limit_key(ip, user_id)
         try:
-            if getattr(g, "_auth_sid_present", False) and getattr(
-                g, "_auth_clear_cookie", False
-            ):
-                sid = request.cookies.get(SESSION_COOKIE_NAME)
-                if sid:
-                    try:
-                        logout_session(sid)
-                    except Exception:
-                        pass
-                _clear_sid_cookie(resp)
+            check_rate_limit(key, cfg.rate_limit_per_min if limit is None else limit)
+        except RateLimitError as e:
+            resp = _rate_limited(str(e))
+            try:
+                rem = remaining(key, cfg.rate_limit_per_min if limit is None else limit)
+                resp.headers["X-RateLimit-Remaining"] = str(rem)
+            except Exception:
+                pass
+            return resp
+        resp = fn(*args, **kwargs)
+        try:
+            rem = remaining(key, cfg.rate_limit_per_min if limit is None else limit)
+            if isinstance(resp, Response):
+                resp.headers["X-RateLimit-Remaining"] = str(rem)
         except Exception:
-            # Never block response due to logout cleanup
             pass
-
-        # Attach Content-Security cookies semantics are handled elsewhere; ensure cookie flags if set here
-        # (We do not refresh or set the auth cookie here; that is responsibility of auth_service on login/refresh.)
         return resp
+
+    return wrapper

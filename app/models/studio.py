@@ -1,193 +1,187 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+import re
+from copy import deepcopy
+from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional
 
-from pymongo import ASCENDING, IndexModel
-from pymongo.collection import Collection
-from pymongo.database import Database
+from app.config import load_config
+from app.models.base import TIMESTAMP_FIELDS
+from app.utils.time import isoformat_utc, now_utc
 
-from app.models.base import BaseModel
-
-COLLECTION = "studio"
-
-__all__ = ["COLLECTION", "ensure_indexes", "get_collection", "Studio"]
-
-
-def get_collection(db: Database) -> Collection:
-    return db[COLLECTION]
+try:
+    from app.utils.phone import normalize_phone as _normalize_phone  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover
+    _normalize_phone = None
 
 
-def ensure_indexes(db: Database) -> None:
-    col = get_collection(db)
-    col.create_indexes(
-        [
-            IndexModel([("is_active", ASCENDING)], name="idx_active"),
-        ]
-    )
+__all__ = [
+    "collection_name",
+    "schema_fields",
+    "indexes",
+    "normalize_studio",
+]
+
+collection_name = "studio"
+
+schema_fields: Dict[str, Any] = {
+    "id": {"type": "objectid?", "readonly": True},
+    "name": {"type": "string", "required": True, "max": 200},
+    "bio_i18n": {"type": "object", "schema": {"ko": {"type": "string?"}, "en": {"type": "string?"}}},
+    "avatar": {"type": "string?"},
+    "styles": {"type": "array", "items": {"type": "string"}, "default": []},
+    "address": {
+        "type": "object",
+        "schema": {"text": {"type": "string?"}, "lat": {"type": "number?"}, "lng": {"type": "number?"}},
+        "default": {},
+    },
+    "hours": {"type": "object?", "default": {}},
+    "notice_i18n": {"type": "object", "schema": {"ko": {"type": "string?"}, "en": {"type": "string?"}}, "default": {}},
+    "contact": {
+        "type": "object",
+        "schema": {"phone": {"type": "string?"}, "email": {"type": "string?"}, "sns": {"type": "object?", "default": {}}},
+        "default": {},
+    },
+    "map": {"type": "object", "schema": {"naver_client_id": {"type": "string?"}}, "default": {}},
+    "is_active": {"type": "bool", "default": True},
+    TIMESTAMP_FIELDS[0]: {"type": "string?", "format": "iso8601"},
+    TIMESTAMP_FIELDS[1]: {"type": "string?", "format": "iso8601"},
+}
+
+indexes = [
+    {"keys": [("is_active", 1)], "options": {"name": "is_active_1", "background": True}},
+]
 
 
-def _is_str(v: Any) -> bool:
-    return isinstance(v, str)
+class StudioPayloadError(ValueError):
+    code = "ERR_INVALID_PAYLOAD"
 
 
-def _is_nonempty_str(v: Any) -> bool:
-    return isinstance(v, str) and v.strip() != ""
+def _ensure_mapping(doc: Mapping) -> None:
+    if not isinstance(doc, Mapping):
+        raise StudioPayloadError("document must be a mapping/dict")
 
 
-def _norm_i18n_text(d: Any, *, require_ko: bool = True) -> dict[str, str]:
-    if not isinstance(d, dict):
-        raise ValueError("invalid i18n payload")
-    ko = d.get("ko")
-    en = d.get("en")
-    if require_ko and not _is_nonempty_str(ko):
-        raise ValueError("ko is required")
-    out: dict[str, str] = {"ko": ko.strip()}
-    if _is_str(en) and en.strip() != "":
-        out["en"] = en.strip()
-    return out
+def _now_iso() -> str:
+    return isoformat_utc(now_utc())
 
 
-def _as_float(v: Any) -> float:
-    if isinstance(v, (int, float)):
-        return float(v)
-    if isinstance(v, str) and v.strip() != "":
+def _clean_str(v: Optional[Any]) -> Optional[str]:
+    return v.strip() if isinstance(v, str) else None
+
+
+def _clean_email(v: Optional[Any]) -> Optional[str]:
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise StudioPayloadError("email must be string")
+    e = v.strip().lower()
+    if not e:
+        return None
+    if "@" not in e or e.startswith("@") or e.endswith("@"):
+        raise StudioPayloadError("invalid email format")
+    return e
+
+
+def _fallback_normalize_phone_kr(v: str) -> str:
+    s = re.sub(r"[^\d]", "", v or "")
+    if not s:
+        return ""
+    if s.startswith("82"):
+        s = s[2:]
+    if s.startswith("0"):
+        s = s[1:]
+    if not (s.startswith("10") and len(s) in (9, 10, 11)):
+        raise StudioPayloadError("invalid KR phone")
+    if len(s) == 9:
+        s = "0" + s
+    mid = s[2:6]
+    tail = s[6:]
+    return f"+82-10-{mid}-{tail}"
+
+
+def _normalize_phone(v: Optional[Any]) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v)
+    if not s.strip():
+        return None
+    if _normalize_phone is not None:  # type: ignore[truthy-function]
         try:
-            return float(v)
-        except Exception:
-            pass
-    raise ValueError("invalid float")
+            return _normalize_phone(s)  # type: ignore[misc]
+        except Exception as e:  # pragma: no cover
+            raise StudioPayloadError(str(e))
+    return _fallback_normalize_phone_kr(s)
 
 
-def _norm_address(addr: Any) -> dict[str, Any]:
-    if not isinstance(addr, dict):
-        raise ValueError("invalid address")
-    out: dict[str, Any] = {}
-    if "text" in addr and _is_str(addr["text"]):
-        out["text"] = addr["text"].strip()
-    if "lat" in addr or "lng" in addr:
-        lat = _as_float(addr.get("lat"))
-        lng = _as_float(addr.get("lng"))
-        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
-            raise ValueError("invalid coordinates")
-        out["lat"] = lat
-        out["lng"] = lng
+def _unique_trimmed(items: Iterable[str]) -> list[str]:
+    seen = set()
+    out = []
+    for x in items or []:
+        if not isinstance(x, str):
+            continue
+        t = x.strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
     return out
 
 
-def _norm_styles(styles: Any) -> list[str]:
-    if styles is None:
-        return []
-    if not isinstance(styles, list):
-        raise ValueError("styles must be list")
-    out: list[str] = []
-    for s in styles:
-        if _is_nonempty_str(s):
-            out.append(s.strip())
-    return out
+def _norm_i18n(obj: Mapping[str, Any] | None) -> Dict[str, Optional[str]]:
+    o = dict(obj or {})
+    ko = _clean_str(o.get("ko")) or ""
+    en = _clean_str(o.get("en")) or None
+    return {"ko": ko, "en": en}
 
 
-def _norm_contact(contact: Any) -> dict[str, Any]:
-    if contact is None:
-        return {}
-    if not isinstance(contact, dict):
-        raise ValueError("invalid contact")
-    out: dict[str, Any] = {}
-    if "phone" in contact and _is_str(contact["phone"]):
-        out["phone"] = contact["phone"].strip()
-    if "email" in contact and _is_str(contact["email"]):
-        out["email"] = contact["email"].strip().lower()
-    if "sns" in contact:
-        out["sns"] = contact["sns"]
-    return out
+def normalize_studio(doc: Mapping[str, Any]) -> Dict[str, Any]:
+    _ensure_mapping(doc)
+    cfg = load_config()
+    out: MutableMapping[str, Any] = deepcopy(dict(doc))
 
+    name = _clean_str(out.get("name"))
+    if not name:
+        raise StudioPayloadError("name is required")
+    out["name"] = name
 
-def _norm_map(m: Any) -> dict[str, Any]:
-    if m is None:
-        return {}
-    if not isinstance(m, dict):
-        raise ValueError("invalid map")
-    out: dict[str, Any] = {}
-    if "naver_client_id" in m and _is_nonempty_str(m["naver_client_id"]):
-        out["naver_client_id"] = m["naver_client_id"].strip()
-    return out
+    out["bio_i18n"] = _norm_i18n(out.get("bio_i18n"))
+    out["notice_i18n"] = _norm_i18n(out.get("notice_i18n"))
 
+    avatar = _clean_str(out.get("avatar"))
+    out["avatar"] = avatar or None
 
-class Studio(BaseModel):
-    def __init__(self, doc: Optional[dict[str, Any]] = None):
-        super().__init__(doc or {})
+    out["styles"] = _unique_trimmed(out.get("styles") or [])
 
-    @staticmethod
-    def prepare_new(payload: dict[str, Any]) -> dict[str, Any]:
-        doc: dict[str, Any] = {}
+    addr = dict(out.get("address") or {})
+    addr_text = _clean_str(addr.get("text"))
+    lat = addr.get("lat")
+    lng = addr.get("lng")
+    addr_norm = {
+        "text": addr_text or None,
+        "lat": float(lat) if isinstance(lat, (int, float, str)) and str(lat).strip() != "" else None,
+        "lng": float(lng) if isinstance(lng, (int, float, str)) and str(lng).strip() != "" else None,
+    }
+    out["address"] = addr_norm
 
-        # Required/primary fields
-        if "bio_i18n" not in payload:
-            raise ValueError("bio_i18n.ko is required")
-        if "notice_i18n" not in payload:
-            raise ValueError("notice_i18n.ko is required")
+    hours = out.get("hours") or {}
+    out["hours"] = hours if isinstance(hours, Mapping) else {}
 
-        if "name" in payload and _is_nonempty_str(payload["name"]):
-            doc["name"] = payload["name"].strip()
+    contact = dict(out.get("contact") or {})
+    out["contact"] = {
+        "phone": _normalize_phone(contact.get("phone")),
+        "email": _clean_email(contact.get("email")),
+        "sns": contact.get("sns") if isinstance(contact.get("sns"), Mapping) else {},
+    }
 
-        doc["bio_i18n"] = _norm_i18n_text(payload.get("bio_i18n"), require_ko=True)
-        doc["notice_i18n"] = _norm_i18n_text(payload.get("notice_i18n"), require_ko=True)
+    mp = dict(out.get("map") or {})
+    naver_id = _clean_str(mp.get("naver_client_id")) or _clean_str(cfg.naver_map.naver_client_id)
+    out["map"] = {"naver_client_id": naver_id or None}
 
-        if "avatar" in payload and _is_nonempty_str(payload["avatar"]):
-            doc["avatar"] = payload["avatar"].strip()
+    is_active = out.get("is_active")
+    out["is_active"] = bool(is_active) if isinstance(is_active, bool) else True
 
-        doc["styles"] = _norm_styles(payload.get("styles"))
+    for f in TIMESTAMP_FIELDS:
+        if not out.get(f):
+            out[f] = _now_iso()
 
-        if "address" in payload:
-            doc["address"] = _norm_address(payload.get("address"))
-
-        if "hours" in payload:
-            # Stored as-is (string or simple structure), time zone agnostic per spec
-            doc["hours"] = payload.get("hours")
-
-        if "contact" in payload:
-            doc["contact"] = _norm_contact(payload.get("contact"))
-
-        if "map" in payload:
-            doc["map"] = _norm_map(payload.get("map"))
-
-        doc["is_active"] = bool(payload.get("is_active", True))
-
-        return Studio.stamp_new(doc)
-
-    @staticmethod
-    def prepare_update(partial: dict[str, Any]) -> dict[str, Any]:
-        upd: dict[str, Any] = {}
-
-        if "name" in partial and _is_str(partial.get("name")):
-            upd["name"] = (partial.get("name") or "").strip()
-
-        if "bio_i18n" in partial:
-            upd["bio_i18n"] = _norm_i18n_text(partial.get("bio_i18n"), require_ko=True)
-
-        if "notice_i18n" in partial:
-            upd["notice_i18n"] = _norm_i18n_text(partial.get("notice_i18n"), require_ko=True)
-
-        if "avatar" in partial and _is_str(partial.get("avatar")):
-            val = (partial.get("avatar") or "").strip()
-            if val:
-                upd["avatar"] = val
-
-        if "styles" in partial:
-            upd["styles"] = _norm_styles(partial.get("styles"))
-
-        if "address" in partial:
-            upd["address"] = _norm_address(partial.get("address"))
-
-        if "hours" in partial:
-            upd["hours"] = partial.get("hours")
-
-        if "contact" in partial:
-            upd["contact"] = _norm_contact(partial.get("contact"))
-
-        if "map" in partial:
-            upd["map"] = _norm_map(partial.get("map"))
-
-        if "is_active" in partial:
-            upd["is_active"] = bool(partial.get("is_active"))
-
-        return Studio.stamp_update(upd)
+    return dict(out)

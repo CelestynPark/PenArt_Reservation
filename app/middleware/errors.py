@@ -1,116 +1,106 @@
 from __future__ import annotations
 
+import json
 import logging
+import traceback
 import uuid
-from typing import Any, Tuple
+from typing import Any, Dict, Tuple
 
-from flask import Flask, request, g
-from werkzeug.exceptions import (
-    HTTPException,
-    BadRequest,
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    MethodNotAllowed,
-    Conflict,
-    UnsupportedMediaType,
-    RequestEntityTooLarge,
-    TooManyRequests,
-)
+from flask import Response, current_app, g, request
+from werkzeug.exceptions import HTTPException, BadRequest, Unauthorized, Forbidden, NotFound, Conflict, UnprocessableEntity, TooManyRequests
 
-from app.core.constants import ErrorCode
-from app.utils.responses import fail
+from app.utils.validation import ValidationError
+from app.services.i18n_service import t
 
-logger = logging.getLogger(__name__)
+__all__ = ["register_error_handlers"]
 
+_LOG = logging.getLogger(__name__)
 
-def _ensure_request_id() -> str:
-    rid = getattr(g, "request_id", None) or request.headers.get("X-Request-ID")
-    if not rid:
-        rid = uuid.uuid4().hex
-    g.request_id = rid
-    return rid
+_ERR_MAP: Dict[int, Tuple[str, str]] = {
+    400: ("ERR_INVALID_PAYLOAD", "errors.invalid_payload"),
+    401: ("ERR_UNAUTHORIZED", "errors.unauthorized"),
+    403: ("ERR_FORBIDDEN", "errors.forbidden"),
+    404: ("ERR_NOT_FOUND", "errors.not_found"),
+    409: ("ERR_CONFLICT", "errors.conflict"),
+    422: ("ERR_INVALID_PAYLOAD", "errors.unprocessable"),
+    429: ("ERR_RATE_LIMIT", "errors.rate_limit"),
+    500: ("ERR_INTERNAL", "errors.internal"),
+}
 
 
-def _request_ctx() -> dict:
-    return {
-        "request_id": _ensure_request_id(),
-        "method": request.method,
-        "path": request.full_path if request.query_string else request.path,
-        "ip": request.headers.get("X-Forwarded-For", request.remote_addr),
-        "ua": request.user_agent.string if request.user_agent else "",
-    }
+def _req_id() -> str:
+    hdr = request.headers.get("X-Request-Id")
+    if hdr and hdr.strip():
+        return hdr.strip()
+    return uuid.uuid4().hex
 
 
-def _extract_custom_error(e: Exception) -> Tuple[str, int, str]:
-    code = getattr(e, "code", None)
-    if isinstance(code, ErrorCode):
-        return code.value, 400, str(e)
-    if isinstance(getattr(e, "error_code", None), ErrorCode):
-        return e.error_code.value, 400, str(e)
-    return ErrorCode.INTERNAL.value, 500, "Internal server error"
+def _lang() -> str:
+    return getattr(g, "lang", None) or "ko"
 
 
-def _log(level: int, status: int, e: Exception, msg: str) -> None:
-    data = _request_ctx() | {"status": status, "message": msg, "etype": type(e).__name__}
-    logger.log(level, "error_response", extra={"context": data}, exc_info=status >= 500)
+def _mk_envelope(code_enum: str, message: str) -> Dict[str, Any]:
+    return {"ok": False, "error": {"code": code_enum, "message": message}, "i18n": {"lang": _lang()}}
 
 
-def _handle_http_exception(e: HTTPException):
-    mapping: dict[type, tuple[str, int]] = {
-        BadRequest: (ErrorCode.INVALID_PAYLOAD.value, 400),
-        Unauthorized: (ErrorCode.UNAUTHORIZED.value, 401),
-        Forbidden: (ErrorCode.FORBIDDEN.value, 403),
-        NotFound: (ErrorCode.NOT_FOUND.value, 404),
-        MethodNotAllowed: (ErrorCode.INVALID_PAYLOAD.value, 405),
-        Conflict: (ErrorCode.CONFLICT.value, 409),
-        RequestEntityTooLarge: (ErrorCode.INVALID_PAYLOAD.value, 413),
-        UnsupportedMediaType: (ErrorCode.INVALID_PAYLOAD.value, 415),
-        TooManyRequests: (ErrorCode.RATE_LIMIT.value, 429),
-    }
-    code, status = mapping.get(type(e), (ErrorCode.INTERNAL.value, 500))
-    message = getattr(e, "description", "") or e.name or "Error"
-    _log(logging.WARNING if status < 500 else logging.ERROR, status, e, message)
-    return fail(code=code, message=message, status=status)
+def _respond(status: int, code_enum: str, msg_key: str, *, detail: str | None = None) -> Response:
+    lang = _lang()
+    msg = t(lang, msg_key)
+    # If bundle missing, show a safe generic English fallback
+    if msg == msg_key:
+        _fallback: Dict[str, str] = {
+            "errors.invalid_payload": "Invalid request payload.",
+            "errors.unauthorized": "Unauthorized.",
+            "errors.forbidden": "Forbidden.",
+            "errors.not_found": "Not found.",
+            "errors.conflict": "Conflict.",
+            "errors.unprocessable": "Unprocessable entity.",
+            "errors.rate_limit": "Rate limit exceeded.",
+            "errors.internal": "Internal server error.",
+        }
+        msg = _fallback.get(msg_key, "Error.")
+    if detail and current_app.debug:
+        msg = f"{msg} ({detail})"
+
+    body = json.dumps(_mk_envelope(code_enum, msg), ensure_ascii=False)
+    resp = Response(body, status=status, mimetype="application/json")
+    resp.headers["X-Request-Id"] = _req_id()
+    return resp
 
 
-def _handle_key_error(e: KeyError):
-    field = str(e).strip("'\"")
-    message = f"Missing field: {field}" if field else "Invalid payload"
-    _log(logging.WARNING, 400, e, message)
-    return fail(code=ErrorCode.INVALID_PAYLOAD, message=message, status=400)
+def _handle_validation(err: ValidationError) -> Response:
+    # Field-aware message exposure is okay; still mapped to 400
+    detail = str(err)
+    return _respond(400, *_ERR_MAP[400], detail=detail)
 
 
-def _handle_value_error(e: ValueError):
-    message = str(e) or "Invalid payload"
-    _log(logging.WARNING, 400, e, message)
-    return fail(code=ErrorCode.INVALID_PAYLOAD, message=message, status=400)
+def _handle_http(err: HTTPException) -> Response:
+    status = err.code or 500
+    code_enum, key = _ERR_MAP.get(status, _ERR_MAP[500])
+    # Prefer werkzeug description for debug detail
+    detail = getattr(err, "description", None)
+    return _respond(status, code_enum, key, detail=str(detail) if detail else None)
 
 
-def _handle_type_error(e: TypeError):
-    message = str(e) or "Invalid payload"
-    _log(logging.WARNING, 400, e, message)
-    return fail(code=ErrorCode.INVALID_PAYLOAD, message=message, status=400)
+def _handle_generic(err: Exception) -> Response:
+    # Log stack but hide internal detail from clients
+    rid = _req_id()
+    _LOG.error("Unhandled exception (rid=%s) %s\n%s", rid, err, traceback.format_exc())
+    resp = _respond(500, *_ERR_MAP[500])
+    resp.headers["X-Request-Id"] = rid
+    return resp
 
 
-def _handle_permission_error(e: PermissionError):
-    message = str(e) or "Forbidden"
-    _log(logging.WARNING, 403, e, message)
-    return fail(code=ErrorCode.FORBIDDEN, message=message, status=403)
+def register_error_handlers(app) -> None:
+    app.register_error_handler(ValidationError, _handle_validation)
 
+    app.register_error_handler(BadRequest, _handle_http)
+    app.register_error_handler(Unauthorized, _handle_http)
+    app.register_error_handler(Forbidden, _handle_http)
+    app.register_error_handler(NotFound, _handle_http)
+    app.register_error_handler(Conflict, _handle_http)
+    app.register_error_handler(UnprocessableEntity, _handle_http)
+    app.register_error_handler(TooManyRequests, _handle_http)
 
-def _handle_custom_or_internal(e: Exception):
-    code, status, message = _extract_custom_error(e)
-    if status >= 500 and code == ErrorCode.INTERNAL.value:
-        message = "Internal server error"
-    _log(logging.WARNING if status < 500 else logging.ERROR, status, e, message)
-    return fail(code=code, message=message, status=status)
-
-
-def register_error_handlers(app: Flask) -> None:
-    app.register_error_handler(HTTPException, _handle_http_exception)
-    app.register_error_handler(KeyError, _handle_key_error)
-    app.register_error_handler(ValueError, _handle_value_error)
-    app.register_error_handler(TypeError, _handle_type_error)
-    app.register_error_handler(PermissionError, _handle_permission_error)
-    app.register_error_handler(Exception, _handle_custom_or_internal)
+    app.register_error_handler(HTTPException, _handle_http)
+    app.register_error_handler(Exception, _handle_generic)

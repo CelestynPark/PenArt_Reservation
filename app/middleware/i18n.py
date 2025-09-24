@@ -1,46 +1,57 @@
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Optional
+import json
+from typing import Any, Dict, Optional
 
-from flask import Flask, Request, Response, g, request
+from flask import g, request, Response
 
-from app.config import get_settings
-from app.services.i18n_service import detect_lang as _detect_lang
+from app.services.i18n_service import resolve_lang
 
-__all__ = ["init_i18n"]
-
-
-COOKIE_NAME = "lang"
-COOKIE_MAX_AGE = int(timedelta(days=365).total_seconds())  # 1 year
+__all__ = ["i18n_before_request", "i18n_after_request", "get_current_lang"]
 
 
-def _choose_lang(req: Request) -> str:
-    return _detect_lang(req)
+def _pick_lang() -> str:
+    q = request.args.get("lang")
+    c = request.cookies.get("lang")
+    h = request.headers.get("Accept-Language")
+    return resolve_lang(q, c, h)
 
 
-def init_i18n(app: Flask) -> None:
-    settings = get_settings()
+def i18n_before_request() -> None:
+    g.lang = _pick_lang()
 
-    @app.before_request  # type: ignore[misc]
-    def _before_i18n() -> None:
-        g.lang = _choose_lang(request)
 
-    @app.after_request  # type: ignore[misc]
-    def _after_i18n(response: Response) -> Response:
-        lang: Optional[str] = getattr(g, "lang", None)
-        if lang:
-            response.headers.setdefault("Content-Language", lang)
+def _inject_i18n(envelope: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    if not isinstance(envelope, dict):
+        return envelope
+    if "i18n" not in envelope or not isinstance(envelope["i18n"], dict):
+        envelope["i18n"] = {"lang": lang}
+    else:
+        envelope["i18n"]["lang"] = lang
+    return envelope
 
-        # Persist language selection only when explicitly requested via query
-        if "lang" in request.args and lang:
-            response.set_cookie(
-                COOKIE_NAME,
-                lang,
-                max_age=COOKIE_MAX_AGE,
-                secure=settings.is_production,
-                httponly=False,  # readable by client for SSR/CSR toggles
-                samesite="Lax",
-                path="/",
-            )
+
+def i18n_after_request(response: Response) -> Response:
+    try:
+        ct = (response.mimetype or "").lower()
+        if "application/json" not in ct:
+            return response
+        raw = response.get_data(as_text=True)
+        if not raw:
+            return response
+        payload: Optional[Dict[str, Any]] = json.loads(raw)
+        if not isinstance(payload, dict):
+            return response
+        lang = getattr(g, "lang", None) or _pick_lang()
+        payload = _inject_i18n(payload, lang)
+        response.set_data(json.dumps(payload, ensure_ascii=False))
+        # keep content-length consistent if set
+        if "Content-Length" in response.headers:
+            response.headers["Content-Length"] = str(len(response.get_data()))
         return response
+    except Exception:
+        return response
+
+
+def get_current_lang() -> str:
+    return getattr(g, "lang", None) or "ko"

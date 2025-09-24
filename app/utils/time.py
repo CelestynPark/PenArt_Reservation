@@ -1,127 +1,80 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 from typing import Tuple, Union
-from zoneinfo import ZoneInfo
 
-from app.config import get_settings
-from app.core.constants import KST_TZ
+import pytz
+from dateutil import parser as date_parser
 
-__all__ = (
+from app.config import load_config
+
+__all__ = [
+    "now_utc",
     "to_utc",
     "to_kst",
     "parse_kst_date",
-    "range_utc",
-    "iso",
-)
+    "isoformat_utc",
+]
 
-# Cache timezones
-_SETTINGS = get_settings()
-LOCAL_TZ = ZoneInfo(_SETTINGS.TIMEZONE or KST_TZ)
-UTC = timezone.utc
+DateInput = Union[datetime, str]
 
 
-def _is_date_str(s: str) -> bool:
-    return len(s) == 10 and s[4] == "-" and s[7] == "-"
+@lru_cache(maxsize=1)
+def _tz_kst() -> pytz.BaseTzInfo:
+    tz_name = load_config().timezone or "Asia/Seoul"
+    return pytz.timezone(tz_name)
 
 
-def _parse_iso_dt(s: str) -> datetime:
-    s = s.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(s)
-    except Exception:
-        raise ValueError("Invalid datetime string")
+def _coerce_datetime(value: DateInput) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return date_parser.isoparse(value)
+        except Exception as e:
+            raise ValueError(f"invalid datetime string: {value}") from e
+    raise ValueError("unsupported datetime input")
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def to_utc(dt_or_str: DateInput) -> datetime:
+    dt = _coerce_datetime(dt_or_str)
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt
+        # naive → assume UTC (server-storage default)
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
-def _ensure_aware(dt: datetime, assume_tz: timezone | ZoneInfo) -> datetime:
-    return dt.replace(tzinfo=assume_tz) if dt.tzinfo is None else dt
+def to_kst(dt_or_str: DateInput) -> datetime:
+    dt = _coerce_datetime(dt_or_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_tz_kst())
 
 
-def to_utc(value: Union[datetime, str, date]) -> datetime:
-    """
-    Interpret input as KST/local time and convert to UTC.
-    - datetime naive => assume LOCAL_TZ
-    - ISO8601 string with tz => respected; without tz => assume LOCAL_TZ
-    - 'YYYY-MM-DD' => that day's 00:00:00 at LOCAL_TZ
-    - date => 00:00:00 at LOCAL_TZ
-    """
-    if isinstance(value, date) and not isinstance(value, datetime):
-        dt_local = datetime.combine(value, time.min, tzinfo=LOCAL_TZ)
-        return dt_local.astimezone(UTC)
-
-    if isinstance(value, str):
-        if _is_date_str(value):
-            d = parse_kst_date(value)
-            dt_local = datetime.combine(d, time.min, tzinfo=LOCAL_TZ)
-            return dt_local.astimezone(UTC)
-        dt = _parse_iso_dt(value)
-        # If parsed as naive (assumed UTC in _parse_iso_dt), but we need "KST semantics" for to_utc
-        if dt.tzinfo is UTC and ("T" in value and not any(ch in value for ch in "+-Z")):
-            dt = dt.replace(tzinfo=LOCAL_TZ)
-        return dt.astimezone(UTC)
-
-    if isinstance(value, datetime):
-        dt_local = _ensure_aware(value, LOCAL_TZ)
-        # If input had explicit non-local tz, treat as given and convert
-        if dt_local.tzinfo is None:
-            dt_local = dt_local.replace(tzinfo=LOCAL_TZ)
-        return dt_local.astimezone(UTC)
-
-    raise ValueError("Unsupported type for to_utc")
-
-
-def to_kst(value: Union[datetime, str]) -> datetime:
-    """
-    Interpret input as UTC and convert to LOCAL_TZ.
-    - datetime naive => assume UTC
-    - ISO8601 string with tz => respected; without tz => assume UTC
-    """
-    if isinstance(value, str):
-        dt = _parse_iso_dt(value)  # naive -> assumed UTC
-        return dt.astimezone(LOCAL_TZ)
-
-    if isinstance(value, datetime):
-        dt_utc = _ensure_aware(value, UTC)
-        return dt_utc.astimezone(LOCAL_TZ)
-
-    raise ValueError("Unsupported type for to_kst")
-
-
-def parse_kst_date(s: str) -> date:
-    if not _is_date_str(s):
-        raise ValueError("Invalid date string, expected YYYY-MM-DD")
+def parse_kst_date(date_str: str) -> Tuple[datetime, datetime]:
+    # Input: 'YYYY-MM-DD' (interpreted in KST local calendar day)
+    if not isinstance(date_str, str) or len(date_str) != 10:
+        raise ValueError("date_str must be 'YYYY-MM-DD'")
     try:
-        y, m, d = s.split("-")
-        return date(int(y), int(m), int(d))
-    except Exception:
-        raise ValueError("Invalid date string")
+        y, m, d = [int(x) for x in date_str.split("-")]
+    except Exception as e:
+        raise ValueError("date_str must be 'YYYY-MM-DD'") from e
+
+    kst = _tz_kst()
+    start_kst = kst.localize(datetime(y, m, d, 0, 0, 0))
+    end_kst = start_kst + timedelta(days=1)
+
+    start_utc = start_kst.astimezone(timezone.utc)
+    end_utc = end_kst.astimezone(timezone.utc)
+    return start_utc, end_utc
 
 
-def range_utc(start_kst: Union[date, str], end_kst: Union[date, str]) -> Tuple[datetime, datetime]:
-    """
-    Return UTC range [start, end) for KST-local calendar dates.
-    End is exclusive: from 00:00:00 of start_kst to 00:00:00 of (end_kst + 1 day) in LOCAL_TZ.
-    """
-    if isinstance(start_kst, str):
-        start_kst = parse_kst_date(start_kst)
-    if isinstance(end_kst, str):
-        end_kst = parse_kst_date(end_kst)
-
-    start_local = datetime.combine(start_kst, time.min, tzinfo=LOCAL_TZ)
-    end_local = datetime.combine(end_kst + timedelta(days=1), time.min, tzinfo=LOCAL_TZ)
-    return start_local.astimezone(UTC), end_local.astimezone(UTC)
-
-
-def iso(dt_utc: datetime) -> str:
-    """
-    Serialize UTC datetime to ISO8601 with 'Z' suffix.
-    """
-    if not isinstance(dt_utc, datetime):
-        raise ValueError("iso() expects datetime")
-    dt_utc = _ensure_aware(dt_utc, UTC).astimezone(UTC).replace(microsecond=0)
-    return dt_utc.isoformat().replace("+00:00", "Z")
+def isoformat_utc(dt_or_str: DateInput) -> str:
+    dt_utc = to_utc(dt_or_str)
+    # Use seconds precision; ensure 'Z' suffix
+    return dt_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")

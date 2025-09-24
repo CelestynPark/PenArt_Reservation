@@ -1,57 +1,54 @@
-# syntax=docker/dockerfile:1
+# Flask + Gunicorn runtime image with reproducible layers and non-root execution.
 
-##########
-# Builder
-##########
-FROM python:3.11-slim AS builder
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
-WORKDIR /wheels
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc \
-    libjpeg-dev zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt .
-RUN python -m pip install --upgrade pip wheel && \
-    pip wheel --wheel-dir=/wheels -r requirements.txt
+FROM python:3.11-slim AS base
 
-##########
-# Runtime
-##########
-FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    TZ=Asia/Seoul \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    DEFAULT_LANG=ko \
-    ORDER_EXPIRE_HOURS=48 \
-    INVENTORY_POLICY=hold
-WORKDIR /app
+    PIP_NO_CACHE_DIR=1 \
+    PATH="/home/app/.local/bin:${PATH}"
+
+# System deps (ssl/zlib for pymongo+gunicorn), tini for signal handling
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tzdata ca-certificates curl \
-    libjpeg62-turbo zlib1g \
+    build-essential gcc libc6-dev libssl-dev libffi-dev zlib1g-dev \
+    curl ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
-RUN addgroup --system --gid 10001 penart && adduser --system --uid 10001 --ingroup penart penart
-COPY --from=builder /wheels /wheels
-RUN python -m pip install --no-index --find-links=/wheels /wheels/* && rm -rf /wheels
 
-# App files (minimal, only what runtime needs)
-COPY gunicorn.conf.py ./gunicorn.conf.py
-COPY requirements.txt ./requirements.txt
-COPY app ./app
-COPY openapi ./openapi
-COPY docs ./docs
-COPY public ./public
-COPY scripts ./scripts
+# Create non-root user
+RUN useradd -m -u 10001 -s /bin/bash app
 
-# Folders for runtime writes (uploads/logs)
-RUN mkdir -p /app/uploads /app/logs && chown -R penart:penart /app
-USER penart
+WORKDIR /app
+
+# Leverage layer cache: install deps first
+COPY requirements.txt /app/requirements.txt
+RUN pip install --user -r /app/requirements.txt
+
+# Copy app source (only what we need at runtime)
+COPY app /app/app
+COPY scripts /app/scripts
+COPY openapi /app/openapi
+COPY app/templates /app/app/templates
+
+# Optional static (served by Nginx via volume; keep as fallback)
+COPY static /app/static
+
+# Entrypoint script
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    'umask 027' \
+    '# Best-effort indexes init (Replica Set required). Non-fatal on error.' \
+    'if [ -f /app/scripts/create_indexes.py ]; then' \
+    '  python -m scripts.create_indexes || python /app/scripts/create_indexes.py || true' \
+    'fi' \
+    'exec /usr/bin/tini -- gunicorn -b 0.0.0.0:8000 \'app:create_app()\' \'--workers=${GUNICORN_WORKERS:-2}\' \'--threads=${GUNICORN_THREADS:-4}\' \'--timeout=${GUNICORN_TIMEOUT:-60}\' --access-logfile - --error-logfile -' \
+    > /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh \
+    && chown -R app:app /app
+
+USER app
 
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --retries=10 \
     CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
 
-CMD ["gunicorn", "-c", "gunicorn.conf.py", "app:create_app()"]
+ENTRYPOINT ["/app/entrypoint.sh"]

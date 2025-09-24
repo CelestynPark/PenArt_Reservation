@@ -1,119 +1,97 @@
 from __future__ import annotations
 
 import threading
-import time
-from typing import Any, Optional
-from zoneinfo import ZoneInfo
+from typing import Optional
 
-from flask import Flask
-from pymongo import MongoClient, errors as pymongo_errors
 from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError
+import pytz
 
-from app.config import get_settings
+from app.config import load_config
 
-__all__ = ["mongo", "cache", "scheduler", "init_extensions"]
+__all__ = ["init_extensions", "get_mongo", "get_scheduler"]
 
-
-class SimpleTTLCache:
-    def __init__(self, default_ttl: int = 300):
-        self._store: dict[str, tuple[float, Any]] = {}
-        self._ttl = int(default_ttl)
-        self._lock = threading.RLock()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        now = time.time()
-        with self._lock:
-            item = self._store.get(key)
-            if not item:
-                return default
-            exp, val = item
-            if exp and exp < now:
-                self._store.pop(key, None)
-                return default
-            return val
-
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        ttl_s = int(ttl if ttl is not None else self._ttl)
-        exp = time.time() + ttl_s if ttl_s > 0 else 0.0
-        with self._lock:
-            self._store[key] = (exp, value)
-
-    def delete(self, key: str) -> None:
-        with self._lock:
-            self._store.pop(key, None)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._store.clear()
+_lock = threading.Lock()
+_mongo_client: Optional[MongoClient] = None
+_scheduler: Optional[BackgroundScheduler] = None
 
 
-mongo: Optional[MongoClient] = None
-cache = SimpleTTLCache()
-scheduler: Optional[BackgroundScheduler] = None
-
-
-def _init_mongo(app: Flask) -> MongoClient:
-    global mongo
-    if mongo is not None:
-        return mongo
-    settings = get_settings()
-    opts = dict(
-        tz_aware=True,
-        appname="penart",
-        serverSelectionTimeoutMS=5000,
-        connectTimeoutMS=5000,
-        socketTimeoutMS=10000,
+def _init_mongo() -> MongoClient:
+    cfg = load_config()
+    client = MongoClient(
+        cfg.mongo_url,
+        appname="pen-art",
+        uuidRepresentation="standard",
+        connectTimeoutMS=10_000,
+        serverSelectionTimeoutMS=10_000,
         retryWrites=True,
+        retryReads=True,
+        compressors=None,
+        directConnection=False,
     )
-    client = MongoClient(settings.MONGO_URL, **opts)
     try:
         client.admin.command("ping")
-    except pymongo_errors.PyMongoError as e:
-        app.logger.error("Mongo ping failed: %s", e)
-        raise
-    mongo = client
-    app.extensions["mongo"] = mongo
-    app.logger.info("MongoDB connected (pool ready)")
-    return mongo
-
-
-def _init_scheduler(app: Flask) -> BackgroundScheduler:
-    global scheduler
-    if scheduler is not None and scheduler.running:
-        return scheduler
-    settings = get_settings()
-    tz = ZoneInfo(settings.TIMEZONE or "Asia/Seoul")
-    sched = BackgroundScheduler(
-        timezone=tz,
-        daemon=True,
-        job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
-    )
-    # Register jobs
-    try:
-        from app.jobs.scheduler import register_jobs  # type: ignore
-    except Exception:  # fallback if register function not yet present
-        register_jobs = None  # type: ignore
-
-    if register_jobs:
+    except PyMongoError as e:
         try:
-            register_jobs(sched, app)  # type: ignore[arg-type]
-        except Exception as e:
-            app.logger.error("Failed to register jobs: %s", e)
-            raise
+            client.close()
+        finally:
+            raise RuntimeError("Mongo ping failed") from e
+    return client
 
-    sched.start()
-    scheduler = sched
-    app.extensions["scheduler"] = scheduler
-    app.logger.info("APScheduler started (tz=%s)", settings.TIMEZONE)
+
+def _init_scheduler() -> BackgroundScheduler:
+    tz = pytz.timezone(load_config().timezone or "Asia/Seoul")
+    scheduler = BackgroundScheduler(
+        timezone=tz,
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 300,
+        },
+    )
     return scheduler
 
 
-def init_extensions(app: Flask) -> None:
-    _init_mongo(app)
-    _init_scheduler(app)
-    app.extensions["cache"] = cache
+def init_extensions(app) -> None:
+    global _mongo_client, _scheduler
+    load_dotenv(override=False)
+    with _lock:
+        if _mongo_client is None:
+            _mongo_client = _init_mongo()
+        if _scheduler is None:
+            _scheduler = _init_scheduler()
+            if not _scheduler.running:
+                _scheduler.start(paused=False)
 
-    @app.teardown_appcontext
-    def _shutdown_ctx(_exc: Optional[BaseException]) -> None:
-        # Keep pooled connections for process lifetime; scheduler is background daemon.
-        return None
+    if not hasattr(app, "extensions"):
+        app.extensions = {}
+    app.extensions["mongo"] = _mongo_client
+    app.extensions["scheduler"] = _scheduler
+
+
+def get_mongo() -> MongoClient:
+    if _mongo_client is None:
+        with _lock:
+            if _mongo_client is None:
+                _initialize_minimal()
+    return _mongo_client  # type: ignore[return-value]
+
+
+def get_scheduler() -> BackgroundScheduler:
+    if _scheduler is None:
+        with _lock:
+            if _scheduler is None:
+                _initialize_minimal()
+    return _scheduler  # type: ignore[return-value]
+
+
+def _initialize_minimal() -> None:
+    global _mongo_client, _scheduler
+    if _mongo_client is None:
+        _mongo_client = _init_mongo()
+    if _scheduler is None:
+        _scheduler = _init_scheduler()
+        if not _scheduler.running:
+            _scheduler.start(paused=False)
