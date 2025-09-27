@@ -261,4 +261,3 @@ def append_history(booking_id: str, event: Dict[str, Any], session: ClientSessio
     except PyMongoError as e:
         err = map_pymongo_error(e)
         raise RepoError(err["code"], err["message"]) from e
-    
