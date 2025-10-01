@@ -68,7 +68,7 @@ def _parse_sort(sort: Optional[str], default: Tuple[str, int] = ("order", 1)) ->
     return [(field, order)]
 
 
-def get_by_idd(service_id: str) -> Dict[str, Any] | None:
+def get_by_id(service_id: str) -> Dict[str, Any] | None:
     try:
         oid = _oid(service_id)
     except RepoError:
