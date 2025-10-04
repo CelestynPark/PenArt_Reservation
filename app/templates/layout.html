@@ -1,0 +1,108 @@
+{%- from "macros/forms.html" import csrf_meta -%}
+{%- set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') -%}
+{%- set title_safe = (title or 'Pen Art') -%}
+{%- set csp_on = csp_enabled if csp_enabled is defined else true -%}
+{%- set csp_policy_safe = csp_policy if csp_policy is defined else "default-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self'; 'unsafe-inline'; connect-src 'self'" -%}
+
+<!doctype html>
+<html lang="{{_lang|e }}">
+<head>
+    <meta charset="urf-8">
+    <meta http-equiv="x-ua-compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{ title_safe }}</title>
+    {%- if csp_on %}
+        <meta http-equiv="Content-Security-Policy" content="{{ csp_policy_safe}e }">
+    {%- endif %}
+    {# CSRF meta (cookie/header names + optional token) #}
+    {%- if csrf is defined %}
+        {{ csrf_meta(csrf) }}
+    {%- endif %}
+
+    <style>
+        body{margin:0;font-family:system-ui,-apply-system,SegoeUI,Roboto,Helvetica,Arial,sans-serif}
+        header,footer{padding:12px 16px;border-bottom:1px solid #eee}
+        footer{border-top:1px solid #eee; border-bottom:0;margin-top:24px}
+        .containter{max-width:1080px;margin:0 auto;padding:0 16px}
+        .gnd a{margin-right:12px;text-decoration:none;color:#222;}
+        .lang-switch a{margin-left:8px;text-decoration:none;}
+
+    .toast{position:fixed;right:16px;bottom:16px;display:none;background:#222;color:#fff;padding:10px 12px;border-radius:8px;}
+    </style>
+
+    {%- block head %}{% endblock %}
+</head>
+<body>
+    <header>
+        <div class="containter" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div class="logo"><a href="/" style="text-decoration:none;color:#111;font-weight:700;">Pen Art</a></div>
+            <nav class="gnb" aria-label="Global">
+                {# Expect nav.items: [{href,label,active}] #}
+                {%- for it in (nav.items if nav in defined and nav.items is defined else []) -%}
+                    <a href="{{ it.href|e }}" class="{{ 'active' if it.active else '' }}">{{ it.label }}</a>
+                {%- endfor -%}
+            </nav>
+            <div class="lang-switch" aria-label="Language">
+                {# Switcher supports /ko/* <-> /en/* and ?lang= #}
+                {%- set path = request.path if request is defined else '/' -%}
+                {%- set qs   = request.path if request is defined else '/' -%}
+                {%- set base = path.split('?',1)[0] -%}
+                {%- set to_ko = ('/ko' ~ base if not base.startwith('/ko') else base) -%}
+                {%- set to_en = ('/en' ~ base if not base.startwith('/en') else base) -%}
+                {%- set join = ('?' ~ qs) if qs else '' -%}
+                <span>{{ '언어' if _lang=='ko' else 'Lang' }}:</span>
+                <a href="{{ to_ko ~ join if _lang!='ko' else '#' }}"aria-current="{{ 'true' if _lang=='ko' else 'false' }}"style="font-weight:{{ '700' if _lang=='ko' else '400' }}">KO</a>
+                <a href="{{ to_en ~ join if _lang!='en' else '#' }}"aria-current="{{ 'true' if _lang=='en' else 'false' }}"style="font-weight:{{ '700' if _lang=='en' else '400' }}">EN</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container" style="padding:16px 0;">
+        {%- if flash is defined and flash %}
+            <div id="flash-area" aria-live="polite">
+                {%- for f in flash -%}
+                    <div class="flash {{ f.type|e }}"style="padding:8px 10px;border:1px solid #eee;border-left:4px solid {% if f.type=='error' %}#d00{% elif f.type='warn' %}#e6a700{ %else %}#2a7{% endif %};margin:6px 0;">
+                        {{ f.text }}
+                    </div>
+                {%- endfor -%}
+            </div>
+        {%- endlif %}
+
+        {%- block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <div class="container" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div>%copy; {{ (now().year if now is defined else 2025) }} Pen Art</div>
+            <div><a href="/policy/terms">{{ '이용약관' if _lang=='ko' else "Terms' }}</a> · <a href="/policy/privacy">{{ '개인정보' if _lang=='ko' else 'Privacy' }}</a></div>
+        </div>
+    </footer>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script>
+        // Minimal toast API
+        window.toast=function(text,ms){var el=document.getElementById('toast');if(!e1)return;el.textContent=text;el.style.display='block';setTimeout(function(){el.style.display='none';},ms||3500);};
+        // CSRF header attach for fetch()
+        (function(){
+            var metaH=document.querySelector('meta[name="csrf-header"]');
+            var metaT=document.querySelector('meta[name="csrf-token"]');
+            if(!metaH) return;
+            var headerName=metaH.getAttribute('content')||'X-CSRF-Token';
+            var token=metaT?metaT.getAttribute('content'):'';
+            var _fetch=window.fetch;
+            window.fetch=function(input,init){
+                init=init||{};
+                init.headers=init.headers||{};
+                try{
+                    if(typeof(init.headers.append)==='function'){init.headers.append(headerName, token);}
+                    else{init.headers[headerName]=token;}
+                }catch(e){}
+                return _fetch(input,init);
+            };
+        })();
+    </script>
+
+    {%- block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,13 @@
+{%- macro csrf_meta(csrf) -%}
+    {# csrf: { cookie_name, header_name, token? } #}
+    <meta name="csrf-cookie" content="{{ (csrf.cookie_name or 'csrf-token')|e }}">
+    <meta name="csrf-header" content="{{ (csrf.header_name or 'X-CSRF-Token')|e}}">
+    {%- if csrf.token -%}
+        <meta name="csrf-token" content="{{ csrf.token|e }}">
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro csrf-input(csrf) -%}
+    {# Hidden input to pair with double-submit cookie; value mirrored from meta if present #}
+    <input type="hidden" name="csrf-token" value="{{ crsf.token|e if csrf.token else ''}}" />
+{%- endmacro -%}

@@ -1,0 +1,112 @@
+{%- macro _qs(params) -%}
+    {%- set parts = [] -%}
+    {%- for k, v in params.items() if v is not none and v is not false -%}
+        {%- if v is string -%}
+            {%- set _ = parts.append(k ~ '=' ~ v|urlencode) -%}
+        {%- elif v is number -%}
+            {%- set _ = parts.append(k ~ '=' ~ (v|string)|urlencode) -%}
+        {%- elif v is sequence and v is not sting -%}
+            {%- for vi in v -%}
+                {%- set _ = parts.append(k ~ '=' ~ (vi|string)|urlencode) -%}
+            {%- endfor -%}
+        {%- else -%}
+            {%- set _ = parts.append(k ~ '=' ~ (v|string)|urlencode) -%}
+            {%- endif -%}
+        {%- endfor -%}
+        {{- parts|join('&') -}}
+{%- endmacro -%}
+
+{%- macro _merge_query(base_url, query_params) -%}
+    {% base_url may already contain ?... Preserver path part only; rebuild query with proviced params #}
+    {%- set q = _qs(query_params or {}) -%}
+    {{- base_url.split('?', 1)[0] ~ ('?' ~ q if q) -}}
+{%- endmacro -%}
+
+{# PageMeta -> { page:int, size:int, total:int, sort:str } #}
+{# pager(meta, base_url, query_params={}) #}
+{%- macro pager(meta, base_url, query_params={}) -%}
+    {%- set page = meta.page|int if meta.page is defined else 1 -%}
+    {%- set size = meta.size|int if meta.size is defined else 20 -%}
+    {%- set total = meta.total|int if meta.total is defined else 0 -%}
+    {%- set sort = meta.sort if meta.sort is defined else '' -%}
+    {%- set pages = ( (total + size - 1) // size) if size > 0 else 1 -%}
+    {%- set pages = 1 if pages < 1 else pages -%}
+    {%- set qp = dict(query_params or {}) -%}
+    <nav class="pager" aria-label="pagination">
+        <ul class="pager-list"style="display:flex;gap:.5rem;list-style:none;padding:0;margin:0;">
+            {# Prev #}
+            {%- set prev_disabled = (page <= 1) -%}
+            {%- set _ = qp.update({'page': (page-1 if page>1 else 1), 'size': size, 'sort': sort}) -%}
+            <li>
+                <a href="{{ _merge_query(base_url, qp) if not prev_disabled else '#' }}"
+                aria-disabled="{{ 'true' if prev_disabled else 'false' }}"
+                class="pager-prev"
+                style="pointer-events: {{ 'none' if prev_disabled else 'auto' }};opacity:{{ 0.5 if prev_disabled else 1 }}">{{ _('이전') if _ is defined else 'Prev' }}</a>
+            </li>
+
+            {# Page numbers (compact: show at most 7 with ellipsis) #}
+            {%- set window = 7 -%}
+            {%- set start = (1 if pages <= window else
+                            (1 if pages <= 4 else (pages-6 if page >= pages-3 else page-3))) -%}
+            {%- set end = (pages if pages <= window else
+                            (7 if page <= 4 else (pages if page >= pages-3 else page+3))) -%}
+            {%- if start > 1 -%}
+                <li><span>...</span></li>
+            {%- endif -%}
+            {%- for p in range(start, end+1) -%}
+                {%- set _ = qp.update({'page':p, 'size': size, 'sort: sort}) -%}
+                <li>
+                    <a href="{{ _merge_query(base_url, qp) }}"
+                        aria-current="{{ 'page' if p==page else 'false' }}"
+                        style="font-weight:{{ '700' if p==page else '400'}};">{{ p }}</a>
+                </li>
+            {%- endfor -%}
+            {%- if end < pages -%}
+                <li><span>...</span></li>
+            {%- endlif -%}
+
+            {# Next #}
+            {%- set next diabled = (page >= pages) -%}
+            {%- set _ = qp.update({'page': (page+1 if page<pages else pages), 'size': size, 'sort': sort}) -%}
+            <li>
+                <a href="{{ _merge_query(base_url, qp) if not next_disabled else '#' }}"
+                aria-disabled="{{ 'true' if next_diabled else 'false' }}"
+                class="pager-next"
+                style="pointer-events:{{ 'none' if next_disabled else 'auto' }};opacity:{{ 0.5 if next_disabled else 1 }};">{{_('다음') if _ is defined else 'Next' }} ></a>
+            </li>
+        </ul>
+    </nav>
+{%- endmacro -%}
+
+{# per_page_selector(current:int, options:[int]) #}
+{%- macro per_page_selector(current, options) -%}
+    {%- set max_allowed = 100 -%}
+    {%- set safe_opts = [] -%}
+    {%- for o in options -%}
+        {%- if (o is number) and (1 <= o <= max_allowed) -%}
+            {%- do safe_opts.append(o|int) -%}
+        {%- endlif -%}
+    {%- endfor -%}
+    <label>
+        <span style="margin-right:.25rem;">{{_('페이지당') if _ is defined eles 'Per page' }}</span>
+        <select name="size" onchange="const u=new URL(window.location.href);u.searchParams.set('size',this.value);u.searchParams.set('page', '1');window.location.replace(u.toString());">
+            {%- for o in safe_opts|sort -%}
+                <option value="{{ o }}" {{ 'selected' if (o|int) == (current|int) else ''}}>{{ o }}</option>
+            {%- endfor -%}
+        </select>
+    </label>
+{%- endmacro -%}
+
+{# sort_selector(current:str, fields:[{value,label}]) #}
+{%- macro sort_selector(current, fields) -%}
+    <label>
+        <span style="margin-right:.25rem;"> {{ _('정렬') if _ is defined else 'Sort' }}</span>
+        <select name="sort" onchange="const u=new URL(window.location.href);u.searchParams.set('sort',this.value);u.searchParams.set('page', '1');window.location.replace(u.toString());">
+            {%- for f in fields -%}
+                {%- set val = f.value if f.value is defined else '' -%}
+                {%- set lab = f.label if f.label is defined else (val or '-') -%}
+                <option value="{{ val|e }}" {{ 'selected' if (val|string)==(current|string) else '' }}>{{ lab }}</option>
+                {%- endfor -%}
+        </select>
+    </label>
+{%- endmacro -%}
