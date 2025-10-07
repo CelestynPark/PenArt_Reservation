@@ -98,5 +98,146 @@
         }
     }
 
+    // ------------------ Query String ------------------
+    function _parseSearch(search) {
+        var out = {};
+        if (!search) return out;
+        var s = search.charAt(0) === "?" ? search.slice(1) : search;
+        if (!s) return out;
+        var parts = s.split("&");
+        for (var i = 0; i < parts.length; i++) {
+            if (!parts[i]) continue;
+            var kv = parts[i].split("=");
+            var k = decodeURIComponent(kv[0] || "").trim();
+            if (!k || Object.prototype.hasOwnProperty.call(out, k)) continue; // first wins
+            var v = decodeURIComponent((kv[1] || "").replace(/\+/g, " "));
+            out[k] = v;
+        }
+        return out;
+    }
     
-})
+    function qs(name) {
+        try {
+            var map = _parseSearch(global.location.search || "");
+            return Object.prototype.hasOwnProperty.call(map, name) ? map[name] : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function qso() {
+        try {
+            return _parseSearch(global.location.search || "");
+        } catch (_) {
+            return {};
+        }
+    }
+
+    // ------------------ CSRF ------------------
+    function getCsrfToken() {
+        try {
+            var meta = doc.querySelector('meta[name="csrf.token"]');
+            return meta ? meta.getAttribute("content"): null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    // ------------------ Debounce / Throttle ------------------
+    function debounce(fn, wait) {
+        var tId = null;
+        return function () {
+            var ctx = this,
+            args = arguments;
+            if (tId) clearTimeout(tId);
+            tId = setTimeout(function () {
+                tId = null;
+                fn.apply(ctx, args);
+            }, wait);
+        };
+    }
+
+    function throttle(fn, wait) {
+        var last = 0;
+        var timer = null;
+        return function () {
+            var now = Date.now();
+            var remaining = wait - (now - last);
+            var ctx = this,
+            args = arguments;
+            if (remaining <= 0) {
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                last = now;
+                fn.apply(ctx, args);
+            } else if (!timer) {
+                timer = setTimeout(function () {
+                    last = Date.now();
+                    timer = null;
+                    fn.apply(ctx, args);
+                }, remaining);
+            }
+        };
+    }
+
+    // ------------------ Formatters ------------------
+    function formatKRW(amount) {
+        try {
+            return new Intl.NumberFormat("ko-KR", {
+                style: "currency",
+                currency: "KRW",
+                maximumFractionDigits: 0,
+            }).format(Number(amount || 0));
+        } catch (_) {
+            return String(amount);
+        }
+    }
+
+    // Simple Korean phone formatter; focuses on mobile 010 numbers.
+    function formatPhoneKR(localLike) {
+        var digits = String(localLike || "").replace(/\D+/g, "");
+        if (!digits) return "";
+        // 010-####-####
+        if (digits.length >= 10 && digits.slice(0, 3) === "010") {
+            if (digits.length === 10) {
+                return digits.replace(/(\d{3})(\d{3})(\d{4}).*/, "$1-$2-$3");
+            }
+            return digits.replace(/(\d{3})(\d{4})(\d{4}).*/, "$1-$2-$3");
+        }
+        // 02-####-#### (Seoul) or other area/mobile fallbacks
+        if (digits.slice(0, 2) === "02") {
+            if (digits.length >= 10) return digits.replace(/(\d{2})(\d{4})(\d{4}).*/, "$1-$2-$3");
+            if (digits.length >= 9) return digits.replace(/(\d{2})(\d{4})(\d{4}).*/, "$1-$2-$3");
+            if (digits.length >= 9) return digits.replace(/(\d{2})(\d{4})(\d{4})).*/, "$1-$2-$3");
+        }
+        if (digits.length >= 10) return digits.replace(/(\d{3})(\d{3, 4})(\d{4}).*/, "$1-$2-$3");
+        return digits;
+    }
+
+    // ------------------ Expose ------------------
+    var Util = {
+        TOAST_DEFAULT_MS: TOAST_DEFAULT_MS,
+        domReady: domReady,
+        toast: toast,
+        qs: qs,
+        qso: qso,
+        getCsrfToken: getCsrfToken,
+        debounce: debounce,
+        throttle: throttle,
+        formatKRW: formatKRW,
+        formatPhoneKR: formatPhoneKR
+    };
+
+    global.Util = Util;
+    global.domReady = domReady;
+    global.toast = toast;
+    global.qs = qs;
+    global.qso = qso;
+    global.getCsrfToken = getCsrfToken;
+    global.debounce = debounce;
+    global.throttle = throttle;
+    global.formatKRW = formatKRW;
+    global.formatPhoneKR = formatPhoneKR;
+}) (window, document);
