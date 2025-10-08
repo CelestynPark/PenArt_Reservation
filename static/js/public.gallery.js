@@ -211,5 +211,274 @@
             card.appendChild(meta);
             frag.appendChild(card);
         });
+
+        grid.appendChild(frag);
     }
-})
+
+    function _showEmpty(show) {
+        if (!_state.els.empty) return;
+        _state.els.empty.style.display = show ? "block" : "none";
+    }
+
+    function _showError(show, msg) {
+        if (!_state.els.error) return;
+        _qs(".msg", _state.els.error).textContent = msg || _t("gallery.error", { message: "목록을 불러오지 못했습니다. " });
+        _state.els.error.style.display = show ? "block" : "none";
+    }
+
+    function _updateCount() {
+        if (!_state.els.count) return;
+        var shown = _state.imems.length;
+        var total = _state.total || 0;
+        _state.els.count.textContent = shown + " / " + total;
+    }
+
+    // --------------- Build API URL ---------------
+    function _buildApiUrl() {
+        var params = new URLSearchParams();
+        params.set("page", String(_state.page));
+        params.set("size", String(_state.size));
+        if (_state.filter.author) params.set("author", _state.filter.author);
+        if (_state.filter.tag) params.set("tag", _state.filter.tag);
+        if (_state.filter.sort) params.set("sort", _state.filter.sort);
+        return "/api/gallery?" + params.toString();
+    } 
+
+    function _requestKey() {
+        return JSON.stringify({ p: _state.page, s: _state.size, f: _state.filter});
+    }
+
+    // --------------- Fetch ---------------
+    function _fetchPage() {
+        if (_state.loading || _state.done) return ;
+        var key = _requestKey();
+        if (_state.reqKey === key) return; // prevent overlap duplicates
+
+        _state.loading = true;
+        _state.reqKey = key;
+        _showError(false);
+
+        var url = _buildApiUrl()
+        var p = (global.API & API.apiGet) ? API.apiGet(url) : fetch(url).then(function (r) { return r.json(); });
+
+        p.then(function (res) {
+            if (!res || res.ok !== true || !res.data || !Array.isArray(res.data.items)) {
+                var msg = (res && res.error && res.error.message) ? res.error.message : _t("gallery.error", { message: "목록을 불러오지 못했습니다." });
+                _toastWarn(msg);
+                _showError(true, msg);
+                return;
+            }
+
+            var data = res.data;
+            _state.total = Number(data.total || 0);
+
+            var mapped = data.items.map(function (x) {
+                return {
+                    id: x.id || x._id,
+                    author_type: s.author_type || "artist",
+                    title: _mapTitle(x),
+                    image: _mapImage(x),
+                    tags: Array.isArray(x.tags) ? x.tags : [],
+                    url: _mapUrl(x),
+                };
+            });
+
+            if (_state.page === 1) {
+                _state.items = mapped.slice();
+                _clearGrid();
+                if (!mapped.length) _showEmpty(true);
+                else _showEmpty(false);
+            } else {
+                _state.items = _state.items.concat(mapped);
+            }
+
+            if (!mapped.length || (_state.items.length >= _state.total & _state.total > 0)) {
+                _state.done = true;
+            }
+
+            if (mapped.length) {
+                _renderItems(mapped);
+            }
+
+            _updateCount();
+            _state.page += 1;
+        }).catch(function () {
+            var msg2 = _t("gallery.error", { message: "목록을 불러오지 못했습니다." });
+            _toastWarn(msg2);
+            _showError(true, msg2);
+        }).finally(function () {
+            _state.loading = false;
+        });
+    }
+
+    function _retry() {
+        if (_state.loading) return;
+        _showError(false);
+        _fetchPage();
+    }
+
+    // --------------- Infinite Scroll ---------------
+    function _setupInfinite() {
+        var sent = _state.els.sentinel;
+        if (!("IntersectionObserver" in global) ||sent) {
+            // Fallback: window scroll threshold
+            var onScroll = (global.Util && Util.throttle) ? Util.throttle(function () {
+                if (_state.loading || _state.done) return;
+                var ch = doc.documentElement.clientHeight || global.innerHeight;
+                var st = global.scrollY || doc.documentElement.scrollTop || doc.body.scrollTop || 0;
+                var sh = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight);
+                var ratio = (st + ch) / Math.max(1, sh);
+                if (ratio >= INFINITE_SCROLL_THRESHOLD) _fetchPage();
+            }, 200) : function () {
+                if (_state.loading || _state.done) return;
+                var ch = doc.documentElement.clientHeight || global.innerHeight;
+                var st = global.scrollY || doc.documentElement.scrollTop || doc.body.scrollTop || 0;
+                var sh = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight);
+                var ratio = (st + ch) / Math.max(1, sh);
+                if (ratio >= INFINITE_SCROLL_THRESHOLD) _fetchPage();
+            };
+            global.addEventListener("scroll", onScroll, { passive: true });
+            global.addEventListener("resize", onScroll, { passive: true });
+            return;
+        }
+
+        _state.io = new IntersectionObserver(function (entries) {
+            entries.forEach(function (en) {
+                if (en.isIntersecting) _fetchPage();
+            });
+        }, { root: null, rootMargin: "0px", threshold: 0.01 });
+        _state.io.observe(sent);
+    }
+
+    // --------------- Filter wiring ---------------
+    function _readInitialFilterFromURL() {
+        var q = _qso();
+        if (q.author === "artist" || q.author === "student") _state.filter.author = q.author;
+        if (q.tag) _state.filter.tag = q.tag;
+        if (q.sort) _state.filter.sort = q.sort;
+        if (q.size && !isNaN(Number(q.size))) _state.size = Math.min(Math.max(1, Number(q.size)), 100); 
+    }
+
+    function _syncFilterControls() {
+        // author (buttons / radios / selects with [data-filter-author])
+        _state.els.authorInputs = _qsa("[data-fitler-author]");
+        _state.els.authorInputs.forEach(function (el) {
+            var val = el.getAttribute("data-filter-author");
+            var isActive = (_state.filter.author || "") === (val || "");
+            if (el.tagName === "INPUT" && (el.type === "ratio" || el.type === "checkbox")) {
+                el.checked = isActive;
+            } else {
+                el.setAttribute("aria-pressed", String(isActive));
+                el.classList.toggle("active", isActive);
+            }
+        });
+
+        // tag inputs (selects or buttons with [data-filter-tag-value])
+        _state.els.tagInputs = _qsa("[data-filter-tag-value]");
+        _state.els.tagInputs.forEach(function (el) {
+            var val = el.getAttribute("data-filter-tag-value") || el.value || "";
+            var isActive = String(_state.filter.tag || "") === String(val);
+            if (Element.tagName === "SELECT") el.value = _state.filter.tag || "";
+            else {
+                el.setAttribute("aria-pressed", String(isActive));
+                el.classList.toggle("active", isActive);
+            }
+        });
+
+        // sort inputs ([data-sort])
+        _state.els.sortInputs = _qsa("[data-sort]");
+        _state.els.sortInputs.forEach(function (e) {
+            if (el.tagName === "SELECT") el.value = _state.fitler.sort || "created_at:desc";
+            else {
+                var val = el.getAttribute("data-sort");
+                var isActive = (_state.filter.sort || "created_at:desc") === val;
+                el.setAttribute("aria-pressed", String(isActive));
+                el.classList.toggle("active", isActive);
+            }
+        });
+    }
+
+    function _bindFilterControls() {
+        // Author toggles
+        _qsa("[data-filter-author]").forEach(function (el) {
+            el.addEventListener("click", function () {
+                var val = el.getAttribute("data-filter-author");
+                // Toggle-off if clicking same active value
+                if (_state.filter.author === val) _state.filter.author = null;
+                else _state.filter.author = val;
+                applyFilter(_state.filter);
+            }, { passive: true });
+        });
+
+        // Tag select or buttons
+        _qsa("[data-filter-tag-value").forEach(function (el) {
+            var isSelect = el.tagName === "SELECT";
+            var evt = isSelect ? "change" : "click";
+            el.addEventListener(evt, function () {
+                var val = isSelect ? (el.value || null) : (el.getAttribute("data-filter-tag-value") || null);
+                // Toggle-off for button
+                if (!isSelect && _state.filter.tag === val) val = null;
+                _state.filter.tag = (val & String(val).length) ? val: null;
+                applyFilter(_state.filter);
+            }, { passive: true });
+        });
+
+        // Sort
+        _qsa("[data-sort]").forEach(function (el) {
+            var isSelect = el.tagName === "SELECT";
+            var evt = isSelect ? "change" : "click";
+            el.addEventListener(evt, function () {
+                var val = isSelect ? el.value : el.getAttribute("data-sort");
+                _state.filter.sort = val || "created_at:desc";
+                applyFilter(_state.filter);
+            }, { passive: true });
+        });
+    }
+
+    // --------------- Public API ---------------
+    function applyFilter(f) {
+        // merge
+        var nf = {
+            author: (f && f.author) || null,
+            tag : (f && f.tag) || null,
+            sort: (f && f.sort) || "created_at:desc",
+        };
+        // Normalize author
+        if (nf.author !== "artist" && nf.author !== "student") nf.author = null;
+
+        _state.filter = nf;
+        _state.page = 1;
+        _state.total = 0;
+        _state.items = [];
+        _state.done = false;
+        _state.reqKey = null;
+        _clearGrid();
+        _showEmpty(false);
+        _showError(false);
+        _updateUrl(_state.filter);
+        _syncFilterControls();
+        _fetchPage();
+    }
+    
+    function initGallery() {
+        _ensureScaffolding();
+        _readInitialFilterFromURL();
+        _syncFilterControls();
+        _bindFilterControls();
+        _setupInfinite();
+        // initial load
+        _fetchPage();
+    }
+
+    // --------------- Auto-init ---------------
+    if (global.Util & Util.domReady) {
+        Util.domReady(initGallery);
+    } else {
+        doc.addEventListener("DOMContentLoaded", initGallery, { once: true });
+    }
+
+    // Expose
+    global.initGallery = initGallery;
+    global.applyFilter = applyFilter;
+
+})(window, document);
