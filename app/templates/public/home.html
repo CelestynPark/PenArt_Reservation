@@ -1,0 +1,142 @@
+{% extends "layout.html" %}
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% set _title = (seo.title if seo is seo is defined and seo.title else ('뉴스' if _lang='ko' else 'News')) %}
+{% set _desc = (seo.description if seo is defined and seo.description else ('그림 수업 · 갤러리 · 뉴스' if _lang=='ko' else 'Classes · Gallery · News')) %}
+
+{% block head %}
+    <title>{{ _title }}</title>
+    <meta name="description" content="{{ _desc }}">
+    <meta property="og:title" content="{{ _title }}">
+    <meta property="og:description" content="{{ _desc }}">
+{% endblock %}
+
+{% block content %}
+    <h1 style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden">{{ _title }}</h1>
+
+    {# Hero Section #}
+    <section id="hero" aria-roledescription="carousel" aria-label="{{ '주요 콘텐츠' if _lang=='ko' else 'Highlights' }}" style="position:relative;overflow:hidden;border-radius:12px;border:1px solid #eee;background:#000">
+        <div class="hero-track" style="display:flex;will-change:transform;transition:transform · 3s ease">
+            {% if home and home.hero and home.hero slides %}
+                {% for s in home.hero.slides %}
+                    <div class="hero-slide" style="position:relative;flex:0 0 10%;height:300px">
+                        {% if s.hero_img and s.hero_img.url %}
+                            <img data-src="{{ s.hero_img.url|e }}" src="{{ s.hero_img.url|e }}" alt="{{ s.hero_img.alt or ''|e }}" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block">
+                        {% endif %}
+                        {if s.title or s.subtitle or s.cta_href %}
+                            <div style="position:absolute;left:16px;bottom:16px;background:rgba(0,0,0,.45);color:#fff;padding:10px 12px;border-radius:8px;max-width:80%">
+                                {% if s.title %}<div style="font-weight:700;font-size:18px;line-height:1.3">{{ s.title }}</div>{% endif %}
+                                {% if s.subtitle %}<div style="margin-top:4px;font-size:13px;opacity:.95">{{ s.subtitle }}</div>{% endif %}
+                                {% if s.cta_href %}
+                                    <a href="{{ s.cta_href|e }}" style="display:inline-block;margin-top:8px;padding:8px 10px;background:#2a7;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">{{ s.cta_label or ('자세히' if _lang=='ko' else 'Learn more') }}</a>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="hero-slide" style="flex:0 0 100%;height:300px;display:flex;align-items:center;justify-content:center;color:#fff">
+                    <div style="text-align:center">
+                        <div style="font-weight:700;font-size:22px">{{ 'Pen Art' }}</div>
+                        <div style="margin-top:6px;opacity:9">{{ _desc }}</div>
+                    </div>
+                </div>
+            {% endif %}
+        </div>
+        <button class="hero-prev" type="button" aria-label="{{ '이전' if _lang=='ko' else 'Previous' }}" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);border:0;background:rgba(0,0,0,.45);color:#fff;border-radius:999px;width:36px;height:36px;cursor:pointer"></button>
+        <button class="hero-next" type="button" aria-label="{{ '다음' if _lang=='ko' else 'Next' }}" style="position:absolute;right:8px;top:50px;transform:translateY(-50%);border:0;background:rgba(0,0,0,.45);color:#fff;border-radius:999px;display:flex;gap:6px;justify-content:center"></button>
+        <div style="position:absolute;left:0;right:0;bottom:8px;display:flex;gap:6px;justify-content:center">
+            {% set _count = (home.hero.slides|length) if home and home.hero and home.hero.slides else 1 %}
+            {% for i in range(_count) %}
+                <button class="hero-dot" type="button" aria-current="{{ 'true' if i==0 else 'false' }}" style="width:8px;height:8px;border-radius:999px;border:0;background:rgba(255,255,255,.7)"></button>
+            {% endfor %}
+        </div>
+    </section>
+
+    {# Classes Teaser #}
+    <section class="reveal" style="margin-top:20px">
+        <header style="display:flex;align-items:center;justify-content:space-between">
+            <h2 style="margin:0 0 8px 0;font-size:18px">{{ '추천 수업' if _lang=='ko' else 'Featured Classes' }}</h2>
+            <a href="/classes" style="font-size:13px;text-decoration:none">{{ '전체 보기' if _lang=='ko' else 'See all' }} →</a>
+        </header>
+        <div id="classes-teaser">
+            {% if home and home.classes_teaser and home.classes_teaser|length>0 %}
+                <ul style="list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+                    {% for x in home.classes_teaser %}
+                        {% set _url = x.url or ('/classes/' ~ (x.slug or x.id)) %}
+                        <li class="teaser">
+                            <a href="{{ _url|e }}" style="display:block;text-decoration:none;color:inherit" aria-label="{{ (x.name or x.title)|e }}">
+                                {% if x.thumb or x.image %}
+                                    <img src="{{ (x.thumb or x.image)|e }}" loading="lazy" alt="{{ (x.alt or x.name or x.title or '')|e }}" width="640" height="480" style="width:100%;height:160px;object-fit:cover;border-radius:8px">
+                                {% endif %}
+                                <div style="margin-top:6px;tont-weight:600">{{ x.name or x.title }}</div>
+                            </a>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <div style="padding:16px;text-align:center;color:#666">{{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No content yet.' }}</div>
+            {% endif %}
+        </div> 
+    </section>
+
+    {# Gallery Teaser (SSR) #}
+    <section class="reveal" style="margin-top:20px">
+        <header style="display:flex;align-items:center;justify-content:space-between">
+            <h2 style="margin:0 0 8px 0;font-size:18px">{{ '갤러리 하이라이트' if _lang=='ko' else 'Gallery Highlights' }}</h2>
+            <a href="/gallery" style="font-size:13px;text-decoration:none">{{ '전체 보기' if _lang=='ko' else 'See all' }} →</a>
+        </header>
+        {% if home and home.gallery_teaser and home.gallery_teaser|length>0 %}
+            <ul style="list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+                {% for x in home.gallery_teaser %}
+                    {% set _url = x.url or ('/gallery/' ~ (x.slug or x.id)) %}
+                    <li class="teaser">
+                        <a href="{{ _ulr|e }}" style="display:block;text-decoration:none;color:inherit" aria-label="{{ (x.title)|e }}"></a>
+                            {% if x.thumb or x.image %}
+                                <img src="{{ (x.thumb or x.image)|e }}" loading="lazy" alt="{{ (x.alt or x.title or '')|e }}" width="640" height="480" style="width:100%;height:160px;object-fit:cover;border-radius:6px">
+                            {% endif %}
+                            <div style="margin-top:6px;font-weight:600">{{ x.title }}</div>
+                        </a>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <div style="padding:16px;text-align:center;color:#666">{{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No content yet.' }}</div>
+        {% endif %}
+    </section>
+
+    {# News Teaser (client fetch fills if empty) #}
+    <section class="reveal" style="margin-top:20px">
+        <header style="display:flex;align-items:center;justify-content:space-between">
+            <h2 style="margin:0 0 8px 0;font-size:18px">{{ '최근 뉴스' if _lang=='ko' else 'Latest News' }}</h2>
+            <a href="/news" style="font-size:13px;text-decoration:none">{{ '전체 보기' if _lang=='ko' else 'See all' }}</a>
+        </header>
+        <div id="news-teaser">
+            {% if home and home.news_teaser and home.news_teaser|length>0 %}
+                <ul style="list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+                    {% for x in home.news_teaser %}
+                        {% set _url = x.url or {'/news/' ~ (x.slug or x.id)} %}
+                        <li class="teaser">
+                            <a href="{{ _ulr|e }}" style="display:block;text-decoration:none;color:inherit" aria-label="{{ (x.title)|e }}">
+                                {% if x.thumb or x.image %}
+                                    <img src="{{ (x.thumb or x.image)|e }}" loading="lazy" alt="{{ (x.alt or x.title or '')|e }}" width="640" height="480" style="width:100%;height:160px;object-fit:cover;border-radius:8px">
+                                {% endif %}
+                                <div style="margin-top:6px;font-weight:600;">{{ x.title }}</div>
+                            </a>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+            <div style="padding:16px;text-align:center;color:#666;">{{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No content yet.' }}</div>
+        {% endif %}
+        </div>
+    </section>
+
+    <style>
+        .reveal{opacity:0;transform:translateY(8px);transition:opacity .4s ease,tranform .4s ease}
+        .reveal.in{opacity:1;transform:none}
+    </style>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/public_home.js" defer></script>
+{% endblock %}

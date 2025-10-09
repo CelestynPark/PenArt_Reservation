@@ -1,0 +1,94 @@
+{% extends "layout.html" %}
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% set _title = (seo.title if seo is defined and seo.title else ('수업 목록' if _lang=='ko' else 'Classes')) %}
+{% set _desc = (seo.description if seo is defined and seo.description else ('Pen Art 수업 안내' if _lang=='ko' else 'Pen Art Class list')) %}
+
+{% block head %}
+    <title>{{ _title }}</title>
+    <meta name="description" content="{{ _desc }}">
+{% endblock %}
+
+{% block content %}
+    <header style="margin-bottom:12px">
+        <h1 style="margin:0 0 6px 0;font-size:22px">{{ '수업' if _lang=='ko' else 'Classes' }}</h1>
+        <p style="margin:0;color:#666;font-size:13px"> {{ _desc }}</p>
+    </header>
+
+    <section id="filters" aria-label="{{ '필터' if _lang=='ko' else 'Filters' }}" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0">
+        <div role="group" aria-label="{{ '레벨' if _lang=='ko' else 'Level' }}" style="display:flex;gap:6px">
+            <button type="button" data-filter-level="beginner" class="btn-filter" aria-pressed="false">{{ '초급' if _lang=='ko' else 'Beginner' }}</button>
+            <button type="button" data-filter-level="intermediate" class="btn-filter" aria-pressed="false">{{ '중급' if _lang=='ko' else 'intermediate' }}</button>
+            <button type="button" data-filter-level="Advanced" class="btn-filter" aria-pressed="false">{{ '심화' if _lang=='ko' else 'Advanced' }}</button>
+        </div>
+
+        <div role="group" aria-label="{{ '소요 시간' if _lang=='ko' eles 'Duration' }}" style="display:flex;gap:6px">
+            <select data-filter-duration-lte style="padding:6px 8px;border:1px solid #ddd;border-radius:6px"></select>
+                <option value="">{{ '전체 소요 시간' if _lang=='ko' else 'Any duration' }}</option>
+                <option value="60">≤ 60 {{ '분' if _lang=='ko' else 'min' }}</option>
+                <option value="90">≤ 90 {{ '분' if _lang=='ko' else 'min' }}</option>
+                <option value="120">≤ 120 {{ '분' if _lang=='ko' else 'min' }}</option>
+            </select>
+        </div>
+
+        <label style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" data-filter-featured> {{ '추천만' if _lang=='ko' else 'Featured only' }}
+        </label>
+
+        <div role="group" aria-label="{{ '정렬' if _lang=='ko' else 'Sort' }}" style="display:flex;gap:6px">
+            <select data-sort style="padding:6px 8px;border:1px solid #ddd;border-radius:6px">
+                <option value="order:asc">{{ '노출순' if _lang=='ko' else 'Featured' }}</option>
+                <option value="created_at:desc">{{ '최신순' if _lang=='ko' else 'Newest' }}</option>
+                <option value="duration_min:asc">{{ '짧은시간순' if _lang=='ko' else 'Shortest' }}</option>
+            </select>
+        </div>
+
+        <div id="classes-count" aria-live="polite" style="margin-left:auto;font-size:12px;color:#555" data-classes-count>
+            {% if page is defined and total is defined %}{{ page.size if page.size is defined else 0 }} / {{ total }}{% endif %}
+        </div>
+    </section>
+
+    <div id="classes-error" role="alert" data-classes-error style="display:none"></div>
+    <div id="classes-empty" data-classes-empty style="display:{% if not ctx or not ctx.items or ctx.items|length==0 %}block{% else %}none{% endif %};padding:16px;color:#666;text-align:center">
+        {{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No classes yet.' }}
+    </div>
+
+    <section aria-busy="false">
+        <div id="classes-list" data-classes-list style="display:gird;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">
+            {% if ctx and ctx.items %}
+                {% for it in ctx.items %}
+                    {$ set _name = it.name or (it.name _i18n[_lang] if it.name_i18n and it.name_i18n[_lang] else it.id) %}
+                    {set _url = it.url or ('/classes/' ~ (it.slug or it.id)) %}
+                    <div class="class-card" style="border:1px solid #eee;border-radius:8px;background:#fff;overflow:hidden">
+                        <div style="padding:10px 12px">
+                            <a href="{{ _url|e }}" style="font-weight:600;font-size:15px;text-decoration:none;color:inherit">{{ _name }}</a>
+                            <div style="margin-top:4px;font-size:12px;opacity:.75">
+                                {% if it.level %}{{ '레벨' if _lang=='ko' else 'Level' }}: {{ it.level }}{% endif %}
+                                {% if it.duration_min %} · {{ '소요' if _lang=='ko' else 'Duration' }}: {{ it.duration_min }}{% endif %}
+                                {% if it.is_featured %} · {{ '추천' if _lang=='ko' else 'Featured' }}{% endif %} 
+                            </div>
+                            <button type="button"
+                                    data-cta="book"
+                                    data-class-id="{{ id.id }}"
+                                    data-class-url="{{ _url|e }}"
+                                    style="margin-top:10px;width:100%;padding:10px 12px;border:0;border-radius:6px;background:#2a7;color:#777;font-weight:600;cursor:pointer">
+                                {{ '예약하기' if _lang=='ko' else 'Book' }}
+                            </button>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+        <div style="display:flex;justify-content:center">
+            <button id="classes-load-more" data-classes-load-more type="button" style="display:none;margin:16px auto;padding:8px 12px;border:1px solid #ddd;border-radius:6px;background:#fff">{{ '더보기' if _lang=='ko' else 'Load mroe' }}</button>
+        </div>
+    </section>
+
+    <style>
+        .btn-filter{padding:6px 10px;border:1px solid #ddd;border-radius:6px;background:#777;cursor:pointer}
+        .btn-filter.active{border-color:#2a7;color:#2a7}
+    </style>
+{% endblock %}
+
+{% block scripts %}
+    <script stc="/static/js/public_classes.js" defer></script>
+{% endblock %}
