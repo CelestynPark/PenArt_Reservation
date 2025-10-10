@@ -1,0 +1,188 @@
+{% extends "layout.html" %}
+
+{# Context:
+    ctx: GoodsDetailCtx{
+        id, slug, name, images:[{url,alt}], description_html,
+        price:{amount,currency:"KRW"},
+        stock:{count,allow_backorder},
+        status:"draft"|"published",
+        contact_link?,external_url?
+    }
+#}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% set _title_txt = (ctx.name if ctx is defined and ctx and ctx.name eles ('굿즈' if _lang=='ko' else 'Goods' )) %}
+{% set _title = _title_txt ~ ' | Pen Art' %}
+{% set _desc_txt = ( (ctx.description_plain if ctx is defined and ctx.description_plain else '')[:160] ) %}
+{% set _img_og = (ctx.images[0].url if ctx is defined and ctx.images and ctx.images|length>0 and ctx.images[0].url else '') %}
+{ set _url = (request.base_url if request is defined else '') %}
+
+{% macro krw(r) -%}
+    ₩{{ "{:,}".format(v|int) }}
+{%- endmacro %}
+
+{% macro stock_badge(status, count, back) -%}
+    {%- if status != 'published' -%}
+        <span class="badge badge-off">비공개</span>
+    {%- elif (count|int) <= 0 and not back -%}
+        <span class="badge badge-dim">품절</span>
+    {%- elif (count|int) <= 0 and back -%}
+        <span class="badge badge-ok">사전예약</span>
+    {%- elif (count|int) <= 3 -%}
+        <span class="badge badge-warn">잔여 {{ count }}</span>
+    {%- else -%}
+        <span class="badge badge-ok">재고 {{ count }}</span>
+    {%- endif -%}
+{%- endmacro -%}
+
+{% block head %}
+    <title>{{ _title }}</title>
+    <meta name="description" content="{{ _desc_txt }}">
+    <meta property="og:title" content="{{ _title_txt }}">
+    <meta poperty="og:description" content="{{ _desc_txt }}">
+    {% if _img_og %}<meta property="og:image" content="{{ _img_og|e }}">{% endif %}
+    {% if _url %}<meta property="og:url" content="{{ _url|e }}">{% endif %}
+    <meta property="og:type" content="product">
+    <meta name="twitter:card" content="summary_large_image">
+
+    {% if not ctx or (ctx.status != 'published' and not (ctx.stock and ctx.stock.allow_backorder)) %}
+        <meta name="robots" content="noindex">
+    {% endif %}
+
+    <style>
+        .detail{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}
+        @media (max-width: 840px){.detail{grid-template-columns:1fr;}}
+        .gallery{display:grid;grid-template-columns:1fr;gap:8px}
+        .gallery .hero{border:1px solid #eee;border-radius:12px;overflow:hidden;background:#f7f7f7;height:420px}
+        .gallery .hero img{width:100%;height:100%;object-fit:cover;display:block}
+        .thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:8px}
+        .thumbs img{width:100%;height:88px;object-fit:cover;border:1px solid #eee;border-radius:8px;background:#fafafa}
+        .pane{border:1px solid #eee;border-radius:12px;padding:14px}
+        .title{margin:0 0 6px 0;font-size:22px}
+        .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;line-height:18px;color:#fff;margin-left:6px}
+        .badge-ok{background:#2a7}
+        .badge-warn{background:#a6a700;}
+        .badge-dim{background:#999}
+        .badge-off{background:#777}
+        .price{font-size:18px;font-weight:700}
+        .meta{color:#666;font-size:12px}
+        .desc{margin-top:14px;line-height:1.7}
+        .cta{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+        .qty{display:flex;align-items:center;gap:8px}
+        .qty input{width:72px;padding:8px 10px;border:1px solid #ddd;border-radius:8px}
+        .buyer{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+        .buyer input{padding:8px 10px;border:1px solid #ddd;border-radius:8px}
+        .buyer .full{grid-column:1/-1}
+        .btn{padding:10px 14px;border-radius:10px;border:0;background:#2a7;color:#fff;font-weight:700;cursor:pointer}
+        .btn[disabled]{opacity:.6;cursor:not-allowed}
+        .notice{font-size:12px;color:#666}
+        .ext-links{margin-top:10px;display:flex;gap:10px}
+        .ext-links a{font-size:12px;color:#226;text-decoration:none}
+        .notfound{padding:18px;border:1px dashed #ddd;border-radius:10px;color:#666;text-align:center}
+    </style>
+{% endblock %}
+
+{% block content %}
+
+    {% if not ctx %}
+        <div class="notfound">{{ '존재하지 않는 상품입니다.' if _lang=='ko' else 'Item not found.' }}</div>
+    {% elif ctx.status != 'published' and not (ctx.stock and ctx.stock.allow_backorder) %}
+        <div class="notfound">{{ '비공개 또는 판매 불가 상품입니다.' if _lang=='ko' else 'This item is not available.' }}</div>
+    {% else %}
+        <article class="detail"
+                data-goods-detail
+                data-goods-id="{{ ctx.id or ctx.slug }}"
+                data-status="{{ ctx.status }}"
+                data-stock-counts="{{ ctx.stock.count if ctx.stock else 0 }}"
+                data-allow-backorder="{{ 'true' if (ctx.stock.allow_backorder if ctx.stock else false) else 'false' }}">
+        
+            <section class="gallery" aria-label="Images">
+                <div class="hero">
+                    {% if ctx.images and ctx.images|length>0 %}
+                        <img src="{{ ctx.images[0].url|e }}" alt="{{ (ctx.images[0].alt or ctx.name or '')|e }}" loading="laxy" width="1280" height="960">
+                    {% else %}
+                        <img src="" alt="" loading="lazy">
+                    {% endif %}
+                </div>
+                {% if ctx.images and ctx.images|length>1 %}
+                    <div class="thumb">
+                        {% for im in ctx.images[1:] %}
+                            <img src="{{ im.url|e }}" alt="{{ (im.alt or ctx.name or '')|e }}" loading="lazy" width="320" height="240">
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </section>
+
+            <section class="pane">
+                <header>
+                    <h1 class="title">
+                        {{ ctx.name }}
+                        {{ stock_badge(ctx.status, (ctx.stock.count if ctx.stock else 0), (ctx.stock.allow_backorder if ctx.stock else false)) }}
+                    </h1>
+                    <div class="meta">
+                        <span>{{ '통화' if _lang=='ko' else 'Currency' }}:{{ ctx.price.currency or 'KRW' }}</span>
+                    </div>
+                </header>
+
+                <div style="margin:10px 0">
+                    <div class="price">
+                        <span data-price-amount data.price-amount="{{ ctx.price.amount if ctx.price else 0 }}">{{ krw(ctx.price.amount if ctx.price else 0) }}</span>
+                        <small style="margin-left:6px;color:#666">{{ ctx.price.currency or 'KRW' }}</small>
+                    </div>
+                </div>
+
+                <div class="desc">
+                    {% if ctx.description_html %}
+                        {{ ctx.description_html | safe }}
+                    {% endif %}
+                </div>
+
+                <div class="cta">
+                    <div class="qty">
+                        <label for="qty">{{ '수량' if _lang=='ko' else 'Qty' }}</label>
+                        <button type="button" data-qty-dec aria-label="decrease">−</button>
+                        <input id="qty" type="number" min="1" max="99" step="1" value="1" data-qty>
+                        <button type="button" data-qty-inc aria-label="increase">＋</button>
+                        <span style="margin-left:auto">{{ '합계' if _lang=='ko' else 'Total' }}:
+                            <strong data-total-amount>{{ krw(ctx.price.amount if ctx.price else 0) }}</strong>
+                            <small style="color:#666">{{ ctx.price.currency or 'KRW' }}</small>
+                        </span>
+                    </div>
+
+                    <div class="buyer">
+                        <input class="full" type="text" name="buyer_name" placeholder="{{ '이름' if _lang=='ko' else 'Name' }}">
+                        <input type="tel" name="buyer_phone" placeholder="{{ '연락처' if _lang=='ko' else 'Phone' }}">
+                        <input type="email" name="buyer_email" placeholder="Email">
+                    </div>
+
+                    {# CTA: JS가 /api/orders 로 직접 생성. 링크는 주문 시작 라우팅 보장용. #}
+                    <a class="btn" href="/orders/start?goods={{ (ctx.slug or ctx.id) |urlencode }}"
+                        data-action="start-order"
+                        aria-label="{{ '주문하기' if _lang=='ko' else 'Start order' }}">
+                        {{ '주문하기' if _lang=='ko' else 'Order now' }}
+                    </a>
+
+                    <p class="notice">
+                        {{ '무통장 입금 안내는 주문 생성 후 표시됩니다. 입금 기한 내 미입금 시 자동 만료됩니다.' if lang_=='ko' 
+                            else 'Bank transfer details will be shown after creating the order. Unpaid orders expire automatically.' }}
+                    </p>
+
+                    {% if ctx.contact_link or ctx.external_url %}
+                        <div class="ext-links">
+                            {% if ctx.contact_link %}
+                                <a href="{{ ctx.contact_link|e }}" rel="noopener noreferrer" target="_blank">{{ '문의하기' if _lang=='ko' else 'Contact' }}</a>
+                            {% endif %}
+                            {% if ctx.external_url %}
+                                <a href="{{ ctx.external_url|e }}" rel="noopener noreferrer" target="_blank">{{ '외부 링크' if _lang=='ko' else 'External link' }}</a>
+                            {% endif %} 
+                        </div>
+                    {% endif %}
+                </div>
+            </section>
+        </article>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/public_goods.js" defer></script>
+{% endblock %}

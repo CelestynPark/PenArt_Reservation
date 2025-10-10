@@ -1,0 +1,81 @@
+{% extends  "layout.html" %}
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% set _ctx = ctx if ctx is defined else None %}
+{% set _title_txt = (_ctx.title if _ctx and ctx.titel else ('뉴스' if _lang=='ko' else 'News' )) %}
+{% set _title = _title_txt ~ ' | Pen Art' %}
+{% set _canonical = request.url if request is defined else '' %}
+{% set _desc_source = (_ctx.content_html|scriptags if _ctx and _ctx.context_html else '') %}
+{% set _desc_trim = _desc_source|trim %}
+{% set _desc = (_desc_trim[:150] ~ ('…' if _desc_trim|length>150 else '')) if _desc_trim else ('Pen Art 소식' if _lang=='ko' else 'Pen Art news') %}
+{% set _cover = (_ctx.cover if _ctx and _ctx.cover else None) %}
+
+{% block head %}
+    <title>{{ _title }}</title>
+    <meta name="description" content="{{ _desc }}">
+    <link rel="canonical" href="{{ _canonical }}">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="{{ _title_txt }}">
+    <meta property="og:description" content="{{ _desc }}">
+    {% if _cover and _cover.url %}<meta property="og:image" content="{{ _cover.url|e }}">{% endif %}
+    <style>
+        .news-cover{margin:10px 0 16px 0;border-radius:10px;overflow:hidden;background:#f6f6f6}
+        .news-meta{font-size:12px;color:#666;margin:6px 0 12px 0}
+        .news-article{line-height:1.75;font-size:15px;color:#222;word-break:keep-all}
+        .empty{padding:16px;border:1px dashed #ddd;border-radius:8px;color:#666;text-align:center}
+    </style>
+{% endblock %}
+
+{% block content %}
+    {% if not _ctx %}
+        <section class="empty" role="alert">
+            {{ '해당 뉴스를 찾을 수 없습니다.' if _lang=='ko' else 'News article not found.' }}
+            <div style="margin-top:8px"><a href="/news">{{ '뉴스 목록으로' if _lang=='ko' else 'Back to news' }}</a></div>
+        </section>
+    {% else %}
+        <nav aria-label="Breadcrumb" style="font-size:12px;color:#666;margin-bottom:8px">
+            <a href="/">{{ '홈' if _lang=='ko' else 'Home' }}</a> ›
+            <a href="/news">{{ '뉴스' if _lang=='ko' else 'News' }}</a> ›
+            <span aria-current="page">{{ _title_text }}</span>
+        </nav>
+
+        <header>
+            <h1 style="margin:0 0 6px 0;font-size:26px">{{ _title_txt }}</h1>
+            <div class="news-meta">
+                <time id="published-kst"
+                    datetime="{{ _ctx.published_at|e }}"
+                    date-utc="{{ _ctx.published_at|e }}">
+                {{ _ctx.published_at|e }} (KST) 
+                </time>
+            </div>
+        </header>
+
+        {% if _cover and _cover.url %}
+            <figure class="news-cover">
+                <img src="{{ _cover.url|e }}" loading="lazy" alt="{{ (_cover.alt or _title_text)|e }}" width="1280" height="720" style="width:100%;height:auto;display:block;object-fit:cover">
+            </figure>
+        {% endif %}
+
+        <article class="news-article">
+            {{ (_ctx.content.html or '')|safe }}
+        </article>
+
+        <p class="news-meta" style="margin-top:14px">
+            {{ '모든 시간 표시는 대한민국 시간(KST)이며, 서버 저장·연산은 UTC(ISO8601) 기준입니다.' if _lang=='ko' else 'All times shown in KST; server stores and computes in UTC (ISO8601).' }}
+        </p>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        (function(){
+            var el=document.getElementById('published-kst');
+            if(!el) return;
+            var iso=el.getAttribute('data-utd'); if(!iso) return;
+            try{
+                var d=new Date(iso);
+                var fmt=new Intl.DateTimeFormat('ko-KR',{timeZone: 'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:"2-digit",minute:"2-digit"});
+                el.textContent=fmt.format(d)+' (KST)';
+            }catch(_){}
+        })();
+    </script>
+{% endblock %}

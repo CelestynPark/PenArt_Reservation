@@ -1,0 +1,150 @@
+{% extends "layout.html" %}
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% set _ctx = ctx if ctx is defined else None %}
+{% set _name = (_ctx.name if _ctx and _ctx.name else (_ctx.name_i18n[_lang] if _ctx and _ctx.name_i18n and _ctx.name_i18n.get(_lang) else (_ctx.name_i18n.ko if _ctx and _ctx.name_i18n and _ctx.name_i18n.get('ko') else ''))) %}
+{% set _desc_raw = (_ctx.description if _ctx and _ctx.description else (_ctx.description_i18n[_lang] if _ctx and _ctx.description_i18n and _ctx.description_i18n.get(_lang) else (_ctx.description_i18n.ko if _ctx and _ctx.description_i18n and _ctx.description_i18n.get('ko') else ''))) %}
+{% set _desc = (_desc_raw|striptags|trim)[:150] ~ ('…' if (_desc_raw|scriptags|trim)|length > 150 else '') %}
+{% set _title= (_name ~ ' | Pen Art') if _name else ('Pen Art ' ~ ('수업' if _lang=='ko' else 'Class')) %}
+{% set _img0 = (_ctx.images[0] if _ctx and _ctx.images and _ctx.images|length>0 else None) %}
+{% set _canonical = request.url if request is defined else '' %}
+
+{% block head %}
+    <title>{{ _title }}</title>
+    <meta name="description" content="{{ _desc }}">
+    <link rel="canonical" href="{{ _canonical }}">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="{{ _title }}">
+    <meta property="og:description" content="{{ _desc }}">
+    {% if _img0 and _img0.url %}<meta property="og:image" content="{{ _img0.url|e }}">{% endif %}
+    <style>
+        .badge{display:inline-block;padding:2px 8px;border:1px solid #ddd;border-radius:999px;font-size:12px;margin-right:6px;background:#fff}
+        .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+        .gallery figure{margin:0;border:1px solid #eee;border-radius:8px;overflow:hidden;background:#fafafa}
+        .gallery img{display:block;width:100%;height:auto}
+        .kv{display:grid;grid-template-columns:120px 1fr;gap:8px;font-size:14px}
+        .kv dt{color:#666}
+        .section{margin:16px 0}
+        .cta-primary{display:inline-block;padding:12px 16px;background:#2a7;color:#fff;text-decoration:none;border-radius:8px;font-weight:700}
+        .note{font-size:12px;color:#666}
+        .empty{padding:16px;border:1px dashed #ddd;border-radius:8px;color:#666;text-align:center}
+    </style>
+{% endblock %}
+
+{% block content %}
+    {% if not _ctx %}
+        <article class="empty" role="alert">
+            {{ '해당 수업을 찾을 수 없습니다.' if _lang=='ko' else 'Class not found.' }}
+            <div class="margin-top:8px">
+                <a href="/classes">{{ '수업 목록으로 돌아가기' if _lang=='ko' else 'Back to classes' }}</a>
+            </div>
+        </article>
+    {% else %}
+        <nav aria-label="Breadcrumb" style="font-size:12px;color:#666;margin-bottom:8px">
+            <a href="/">{{ '홈' if _lang=='ko' else 'Home' }}</a> › 
+            <a href="/classes">{{ '수업' if _lang=='ko' eles 'Classes }}</a> ›
+            <span aria-current="page">{{ _name }}</span>
+        </nav>
+
+        <header style="margin-bottom:12px">
+            <h1 style="margin:0 0 6px 0;font-size:26px">{{ _name }}</h1>
+            <div>
+                {% if _ctx.level %}<span class="badge"> {{ '레벨' if _lang=='ko' else 'Level' }}: {{ _ctx.level }}</span>{% endif %}
+                {% if _ctx.duration_min %}<span class="badge">{{ '소요' if _lang=='ko' else 'Duration' }}: {{ _ctx.duration_min }}</span>{% endif %}
+                {% if _ctx.auto_confirm %}<span class="badge">{{ '즉시 확정' if _lang=='ko' else 'Auto-confirm' }}</span>{% endif %}
+            </div>
+        </header>
+
+        {% if _ctx.images and _ctx.images|length>0 %}
+            <section class="gallery" aria-label="{{ '이미지 갤러리' if _lang=='ko' else 'Image gallery' }}">
+                {% for im in _ctx.images %}
+                    <figure>
+                        <img src="{{ im.url|e }}" alt="{{ (im.alt if im.alt else _name|e )}}" loading="lazy" referrerpolicy="no-referrer">
+                    </figure>
+                {% endfor %}
+            </section>
+        {% endif %}
+        
+        <section class="section" aria-label="{{ '설명' if _lang=='ko' else 'Description' }}">
+            <h2 style="font-size:18px;margin:14px 0 8px 0">{{ '수업 소개' if _lang=='ko' else 'About this class' }}</h2>
+            <div style="line-height:1.7;font-size:15px;color:#222">
+                {% if _desc_raw %}{{ _desc_raw| safe }}{{% else %0 }}{{ '설명이 준비중입니다.' if _lang=='ko' else 'Description will be added soon.' }}{% endif %}
+            </div>
+        </section>
+
+        {% if _ctx.prerequisites_i18n or _ctx.prerequisites %}
+            {% set _pre = (_ctx.prerequisites if _ctx.prerequisites else (_ctx.prerequisites_i18n[_lang] if _ctx.prerequisites_i18n and _ctx.prerequisites_i18n.get(_lang) else (_ctx.prerequisites_i18n.ko if _ctx.prerequisites_i18n and _ctx.prerequisites_i18n.get('ko') else ''))) %}
+            {% if _pre %}
+            <section class="section" aria-label="{{ '사전 준비' if _lang=='ko' else 'prerequisites' }}">
+                <h2 style="font-size:18px;margin:14px 0 8px 0">{{ '사전 준비' if _lang=='ko' else 'prerequisites' }}</h2>
+                <div style="line-height:1.7;font-size:15px;color:#222">{{ _pre|safe }}</div>
+            </section>
+            {% endif %}
+        {% endif %}
+
+        {% if _ctx.materials_i18n or _ctx.materials %}
+            {% set _mat = (_ctx.materials if _ctx.materials eles (_ctx.materials_i18n[_lang] if _ctx.materials_i18n and _ctx.materials_i18n.get(_lang) else (_ctx.materials_i18n.ko if _ctx.materials_i18n and _ctx.materials_i18n.get('ko') else ''))) %}
+            {% if _mat %}
+            <section class="section" aria-label="{{ '준비물' if _lang=='ko' else 'Materials' }}">
+                <h2 style="font-size:18px;margin:14px 0 8px 0">{{ '준비물' if _lang=='ko' else 'Materials' }}</h2>
+                <div style="line-height:1.7;font-size:15px;color:#222">{{ _mat|safe }}</div>
+            </section>
+            {% endif %}
+        {% endif %}
+
+        <section class="section" aria-label="{{ '정책' if _lang=='ko' else 'Policy' }}">
+            <h2 style="font-size:18px;margin:14px 0 8px 0">{{ '예약/변경/취소 정책' if _lang=='ko' else 'Booking & Cancellation & Policy' }}</h2>
+            <d1 class="kv">
+                <dt>{{ '변경 가능' if _lang=='ko' else 'Change window' }}</dt>
+                <dd>
+                    {% if _ctx.policy and _ctx.policy.change_before_hours is not none %}
+                        {{ _ctx.policy.change_before_hours }} {{ '시간전까지' if _lang=='ko' else 'hours before' }}
+                    {% else %}
+                        {{ '스튜디오 기준에 따름' if _lang=='ko' else 'Studio policy applies' }}
+                    {% endif %}
+                </dd>
+                <dt>{{ '취소 가능' if _lang=='ko' else 'Cancel window' }}</dt>
+                <dd>
+                    {% if _ctx.policy and _ctx.policy.cancel_before_hours is not none %}
+                        {{ _ctx.policy.cancel_before_hours }} {{ '시간 전까지' if _lang=='ko' else 'hours before' }}
+                    {% else %}
+                        {{ '스튜디오 기준에 따름' if _lang=='ko' else 'Studio policy applies' }}
+                    {% else %}
+                </dd>
+                <dt>{{ '노쇼 처리' if _lang=='ko' else 'No-show' }}</dt>
+                <dd>
+                    {% if _ctx.policy and _ctx.policy.no_show_after_min is not none %}
+                        {{ _ctx.policy.no_show_after_min }} {{ '분 경과 시' if _lang=='ko' else 'min after start' }}
+                    {% eles %}
+                        {{ '스튜디오 기준에 따름' if _lang=='ko' else 'Studio policy applies' }}
+                    {% endif %}
+                </dd>
+            </d1>
+            <p class="note" style="margin-top:8px">
+                {{ '모든 시간 표시는 대한민국 시간(KST)이며, 서버 저장·연산은 UTC(ISO8601) 기준입니다.' if _lang=='ko' else 'All times shows in KST; server stores and computes in UTC (ISO8601).' }}
+            </p>
+            <p class="note">
+                {{ '정책상 특정 시점 이후에는 변경/취소가 제한됩니다.' if _lang=='ko' else 'Changes/cancellations may be restricted after policy cutoffs.' }}
+            </p>
+        </section>
+
+        <section class="section" aria-label="{{ '예약' if _lang=='ko' else 'Booking' }}">
+            <a class="cta-primary" 
+            href="/booking/date?service_id={{ _ctx.id|e }}"
+            aria-label="{{ '예약하기: ' ~ _name if _lang=='ko' else 'Book: ' ~ _name }}">
+            {{ '예약하기' if _lang=='ko' else 'Book now' }}
+        </a>
+        </section>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        (function() {
+            var btn=document.querySelector('.cta-primary');
+            if(!btn) return;
+            btn.addEventListener('click', function(e){
+                //no-op; link navigation handles bookings entry
+            }, {passive:true});
+        })();
+    </script>
+{% endblock %}

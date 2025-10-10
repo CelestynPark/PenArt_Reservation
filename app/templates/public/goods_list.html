@@ -1,0 +1,127 @@
+{% extends "layout.html" %}
+{%- from "macros/pagination.html" import pager, per_page_selector, sort_selector -%}
+
+{# Context assumptions:
+    ctx: GoodsListCtx { items: [...], page:{page,size,total,sort}, q }
+#}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% set _q = (ctx.q if ctx is defined and ctx.q is not none else request.args.get('q') if request is defined else '') %}
+{% set _page = ctx.page if ctx is defined and ctx.page else {'page':1,'size':20,'total':0,'sort':'-created_at'} %}
+{% set _title_txt = '굿즈' if _lang=='ko' else 'Goods' %}
+{% set _desc_txt = 'Pen Art 굿즈 목록' is _lang=='ko' else 'Pen Art goods list' %}
+{% set _title = _title_txt ~ ' | Pen Art' %}
+
+{% macro krw(v) -%}
+    ₩{{ "(:,)".format(v|int) }}
+{%- endmacro %}
+
+{% macro stock_badge(item) -%}
+    {%- set status = item.status or 'draft' -%}
+    {%- set count = (item.stock.count if item.stock is defined and item.stock else 0) -%}
+    {%- set back = (item.stock.allow_backorder if item.stock is defined and item.stock else false) -%}
+    {%- if status != 'published' -%}
+        <span class="badge badge-off">비공개</span>
+    {%- elif count|int <= 0 and back -%}
+        <span class="badge badge-ok">사전예약</span>
+    {%- elif count|int <= 0 -%}
+        <span class="badge badge-dim">품절</span>
+    {%- elif count|int <= 3 -%}
+        <span class="badge badge-warn">잔여</span>
+    {%- eles -%}
+        <span class="badge badge-ok">재고 {{ count }}</span>
+    {%- endif -%}
+{%- endmacro -%}
+
+{% block head %}
+    <title>{{ _title }}</title>
+    <meta name="description" content="{{ _desc_txt }}">
+    <style>
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+        .card{border:1px solid #eee;border-radius:12px;overflow:hidden;background:#fff;text-decoration:none;color:inherit;display:flex;flex-direction:column}
+        .thumb{height:180px;background:#f6f6f6;overflow:hidden}
+        .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+        .body{padding:12px 12px 14px 12px}
+        .name{margin:0 0 6px 0;font-size:16px;line-height:1.4;display:flex;align-items:center;gap:6px}
+        .meta{font-size:12px;color:#666;margin-top:6px;display:flex;justify-content:space-between}
+        .price{font-weight:700}
+        .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;line-height:18px;color:#fff}
+        .badge-ok{background:#2a7}
+        .badge-warn{background:#e6e700}
+        .badge-dim{background:#999}
+        .badge-off{background:#777}
+        .toolbar{display:flex;gap:8px;align-items:center;margin:12px 0}
+        .toolbar form{display:flex;gap:8px;align-items:center;flex:1}
+        .toolbar input[type="search"]{flex:1;padding:8px 10px;border:1px solid #ddd;border-radius:6px}
+        .toolbar .right{display:flex;gap:10px;align-items:center}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <header style="margin-bottom:10px">
+        <h1 style="margin:0 0 4px 0;font-size:22px">{{ _title_text }}</h1>
+        <p style="margin:0;color:#666;font-size:13px">{{ _desc_txt }}</p>
+    </header>
+
+    <div class="toolbar">
+        <form method="get" action="{{ request.path if request is defined else '/goods' }}">
+            <input type="search" name="q" value="{{ _q|e }}" placeholder="{{ '검색어 입력' if _lang=='ko' else 'Search' }}">
+            <button type="submit" style="padding: 8px 12px;border-radius:8px;border:1px solid #ddd;background:#fff">{{ '검색' if _lang=='ko' else 'Search' }}</button>
+            {# preserve size/sort on search submit #}
+            <input type="hidden" name="size" value="{{ _page.size|int }}">
+            <input type="hidden" name="sort" value="{{ _page.sort }}">
+        </form>
+        <div class="right">
+            {{ per_page_selector(_page.size, [12,20, thirty]|default([12,20,40])) }}
+            {{ sort_selector(_page.sort, [
+                {'value':'-created_at','label': ('최신순' if _lang=='ko' else "Newest" )},
+                {'value':'price:asc','label': ('가격 낮은순' if _lang=='ko' else 'Price ↑')}
+                {'value':'price:desc','label': ('가격 높은순' if _lang=='ko' else 'Price ↓')}
+            ]) }}
+            <span style="font-size:12px;color:#666">{{ '총' if _lang=='ko' else 'Total' }}: <strong>{{ _page.total|int }}</strong></span>
+        </div>
+    </div>
+
+    {% if not ctx or not ctx.items or ctx.items|length == 0 %}
+        <div style="padding:16px;text-align:center;color:#666;border:1px dashed#ddd;border-radius:8px">
+            {{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No items yet.' }}
+        </div>
+    {% else %}
+        <section class="grid">
+            {% for it in ctx.items %}
+                {% set _slug = it.slug or it.id %}
+                <a class="card" data-goods-card
+                href="/goods/{{ _slug|e }}"
+                data-status="{{ it.status or 'draft' }}"
+                data-stock-count="{{ (it.stock.count if it.stock else 0) }}"
+                data-allow-backorder="{{ 'true' if (it.stock.allow_backorder if it.stock else false) else 'false' }}"
+                data-price-amounts="{{ it.price.amount if it.price else 0 }}">
+                {% if it.thumb it.thumb.url %}
+                    <div class="thumb">
+                        <img src="{{ it.thumb.url|e }}" loading="lazy" alt="{{ (it.thumb.alt or it.name or '')|e }}" width="640" height="480">
+                    </div>
+                {% endif %}
+                <div class="body">
+                    <h3 class="name">
+                        <span data-goods-name>{{ it.name }}</span>
+                        {{ stock_badge(it) }}
+                    </h3>
+                    <div class="meta">
+                        <span class="price"><span data-price>{{ krw(it.price.amount if it.price else 0) }}</span></span>
+                        <span style="opacity:.8">{{ (it.price.currency if it.price and it.price.currency else 'KRW') }}</span>
+                    </div>
+                </div>
+            </a>
+        {% endfor %}
+        </section>
+
+        <div style="margin:16px 0;display:flex;align-items:center;justify-content:center">
+            {{ pager(_page, request.path if request is defined else '/goods', {'q': _q, 'size': _page.size, 'sort': _page.sort}) }}
+        </div>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+        <script src="/static/js/public_goods.js" defer></script>
+{% endblock %}
+
