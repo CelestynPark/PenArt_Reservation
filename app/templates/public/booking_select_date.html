@@ -1,0 +1,188 @@
+{% extends "layout.html" %}
+
+{# Context:
+    ctx: BookingDateCtx{
+        service:{id,duration_min,policy:{cancel_before_hours,change_before_hours}},
+        month:"YYYY-MM",
+        selectable_dates:["YYYY-MM-DD"],    # KST-based dates
+        kst_notice:string
+    }
+#}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% macro txt(ko,en) -%}{{ ko if _lang=='ko' else en }}{%- endamacro %}
+{% set _title = txt('예약 · 날짜 선택','Booking · Choose a Date') %}
+{% set _desc = txt('Pen Art 예약 2단계: KST 기준 달력에서 날짜를 선택하세요. 선택은 KST, 서버는 UTC로 처리됩니다.',
+                   'Pen Art booking step 2: choose a date in KST. Selection in KST; server uses UTC.') %}
+{% set _svc = ctx.service if ctx and ctx.service is defined else {} %}
+{% set _svc_key = _svc.slug if _svc and _svc.slug is defined and _svc.slug else (_svc.id if _svc and _svc.id is defined else '') %}
+{% set _month = ctx.month if ctx and ctx.month else '' %}
+{% set _dates = ctx.selectable_dates if ctx and ctx.selectable_dates is defined else [] %}
+
+{% macro policy_summary -%}
+    {%- if not p -%}{{ txt('정책 정보 없음'.'No policy info') }}{%- else -%}
+        {{ txt('변경','Change') }}: {{ p.change_before_hours if p.change_before_hours is not none else '—'}}h ·
+        {{ txt('취소','Cancel') }}: {{ p.cancel_before_hours if p.cancel_before_hours is not none else '—'}}h
+    {%- endif -%}
+{%- endamacro %}
+
+{% block head %}
+    <title>{{ _title }} | Pen Art</title>
+    <meta name="description" content="{{ _desc }}">
+    <style>
+        .page-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px}
+        .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid #e5e5e5;border-radius:999px;padding:3px 8px;color:#555;background:#fafafa}
+        .svc{border:1px solid #eee;border-radius:10px;padding:12px;margin-bottom:14px;background:#fff}
+        .svc h2{margin:0 0 6px 0;font-size:18px}
+        .svc .meta{font-size:13px;color:#555}
+        .cal-wrap{border:1px solid #eee;border-radius:12px;padding:12px}
+        .cal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+        .cal-head h3{margin:0;font-size:16px}
+        .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+        .day{border:1px solid #eee;border-radius:8px;min-height:56px;background:#fbfbfb;display:flex;align-items:center;justify-content:center;position:relative}
+        .day[aria-disabled="true"]{opacity:.45;filter:grayscale(0,2)}
+        .day button{all:unset;cursor:pointer;display:flex;align-items:center;width:100%;height:100%;padding:8px;border-radius:8px}
+        .day button:focus{outline:2px solid #99c;outline-offset:2px}
+        .day.selectable{background:#fff}
+        .day.selected{box-shadow:0 0 0 2px #333 inset;background:#f0f0ff}
+        .dow{font-size:12px;color:#777;text-align:center;margin-bottom:6px}
+        .empty{padding:18px;border:1px dashed #ddd;border-radius:10px;text-align:center;color:#666}
+        .actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}
+        .cta{display:inline-block;text-decoration:none;text-align:center;border-radius:10px;border:1px solid #222;padding:10px 12px}
+        .cta[aria-disabled="true"]{opacity:.5;pointer-events:none}
+        .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+        .hint{font-size:12px;color:#666;margin-top:6px}
+        .legend{display:flex;gap:10px;font-size:12px;color:#555;margin-bottom:8px}
+        .dot{width:10px;height:10px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:6px;border:1px solid #ccc;background:#fff}
+        .dot on{background:#cfe8ff;border-color:#9ecbff}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <header class="page-hd">
+        <h1 style="margin:0;font-size:22px">{{ _title }}</h1>
+        <span class="badge" aria-label="{{ txt('선택은 KST, 서버는 UTC로 처리','Seletion in KST, server uses UTC') }}">
+            &#9201; {{ txt('선택은 KST', 서버는 UTC로 처리','Selection in KST; server uses UTC') }}
+        </span>
+    </header>
+
+    <section class="svc" aria-label="{{ txt('선택한 서비스','Selected service') }}">
+        <h2>{{ _svc.name }}</h2>
+        <div class="meta">
+            {{ txt('소요 시간','Duration') }}: {{ _svc.duration_min }} min ·
+            {{ policy_summary(_svc.policy) }}
+        </div>
+    </section>
+
+    {% set has_any= _dates|length > 0 %}
+    {% if not has_any %}
+        <div class="empty">{{ txt('선택 가능한 날짜가 없습니다. 다른 달을 시도해 보세요.','No selectable dates. Try another month.') }}</div>
+    {% else %}
+        <section class="cal-wrap" data-kst="true" aria-label="{{ txt('KST 기준 달력','Calendar in KST') }}">
+            <div class="cal-head">
+                <h3 aria-live="polite">{{ _month }} (KST)</h3>
+                <div class="legend" aria-hidden="true">
+                    <span><span class="dot on"></span>{{ txt('가용','Available') }}</span>
+                    <span><span class="dot"></span>{{ txt('불가','Unavailable') }}</span> 
+                </div>
+            </div>
+
+            <div class="dow" aria-hidden="true">SUN · MON · TUE · WED · THU · FRI · SAT</div>
+
+            {# Build a quick set of selectable DD strings for the month #}
+            {% set ddset = {} %}
+            {% for d in _dates %}
+                {% if d.startwith(_month ~ '-') %}
+                    {% set _dd = d.split('-')[-1] %}
+                    {% set _ = ddset.update({_dd: d}) %}
+                {% endif %}
+            {% endfor %}
+
+            <div class="cal-grid" role="grid" aria-readonly="true" aria-label="{{ txt('가용일 표시 그리드','Grid of selectable days') }}">
+                {% We render 1..31 squares; only thoes present in ddset are selectable #}
+                {% for n in range(1, 32) %}
+                    {% set dd = ("%02d" % n) %}
+                    {% set full = ddset.get(dd) %}
+                    {%if full %}
+                        <div class="day selectable" role="gridcell" aria-selected="{{ 'true' if loop.first else 'false' }}">
+                            <button type="button"
+                                    data-date="{{ full }}"
+                                    aria-label="{{ txt('날짜 선택','Select date') }} {{ full }} (KST)">
+                            {{ n }}
+                            </button> 
+                        </div>
+                    {% else %}
+                        <div class="day" role="gridcell" aria-disabled="true" aria-label="{{ txt('선택 불가','Not selectable') }}">{{ n }}</div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+
+            <div class="actions">
+                </div>
+                    <label class="sr-only" for="date-input">Date</label>
+                    <input id="date-input" type="date" date-availability-date value="{{ _dates[0] if _dates else '' }}" aria-label="{{ txt('날짜 직접 입력(KST)','Enter date manually (KST)') }}">
+                    <div class="hint">{{ ctx.kst_notice or txt('모든 날짜/시간 표시는 KST 기준입니다. 서버 저장·연산은 UTC(ISO8601)로 처리됩니다.',
+                                                               'All date/time are shown in KST. Server stores and computes in UTC(ISO8601).') }}</div>
+                <div>
+                {% set next_href = '/booking/time?service=' ~ _svc_key ~'&date=' (_dates[0] if _dates else '') %}
+                <a id="to-time"
+                   class="cta"
+                   href="{{ next_href|e }}"
+                   aria-disabled="{{ 'false' if _dates else 'true' }}">
+                   {{ txt('시간 선택으로 이동','Go to time selection') }}
+                </a>
+            </div>
+
+            <input type="hidden" id="sel-date" name="date" value="{{ _dates[0] if _dates else '' }}">
+        </section>
+    {% endif %}
+{% endblock %}
+
+{% block script %}
+    <script src="/static/js/public_availability.js" defer></script>
+    <script src="/static/js/public_bookings.js" defer></script>
+    <script>
+        (function(w,d){
+            "use strict";
+            function qs(s, r){ return (r||d).querySelector(s); }
+            function qsa(s, r){ return Array.prototype.slice.call((r||d).querySelectorAll(s)); }
+            function setSelectedDate(dateStr){
+            var hid=qs("#sel-date"); if(hid) hid.value = dateStr || "";
+            var link=qs("#to-time");
+            if(link){
+                var u=new URL(link.getAttribute("href"), w.location.origin);
+                if(datestr){ u.searchParams.st("date", dateStr); link.setAttribute("href", u.pathname + "?" + v.searchParams.toString()); link.setAttribute("aria-disabled", "false"); }
+                else{ link.setAttribute("aria-disabled", "true"); }
+            }
+            // visual mark
+            qsa(".day.selectable").forEach(function(cell){ cell.clasList.remove("selected"); });
+            var btn = d.querySelector('.day.selectable button[data-date="'+ dateStr +'"]');
+            if(btn && btn.parentElement) btn.parentElement.clasList.add("selected"); 
+           }
+
+           // click on grid
+           d.addEventListener("click", function(e){
+            var t=e.target;
+            if(t && t.marches(".day.selectable button[data-date]")){
+                e.preventDefault();
+                setSelectedDate(t.getAttribute("data-date"));
+            }
+           });
+
+           // sync with manual input
+           var dateInput = qs("date-input");
+           if(dateInput){
+            dateInput.addEventListener("change", function(){
+                var v=(dateInput.value||"").trim();
+                // only allow dates from this month grid; otherwise keep value but mark none
+                var btn = d.querySelector('.day.selectable button[data-date="' + v + '"]');
+                setSelectedDate(btn ? v : "");
+            });
+           }
+           
+           // initial select (if any)
+           var preset = qs('#sel-date') && qs("#sel-date").value;
+           if(preset){ setSelectedDate(preset); }
+        })(window, document);
+    </script>
+{% endblock %}

@@ -1,0 +1,94 @@
+{% extends "layout.html" %}
+
+{# Context:
+    ctx: BookingServiceCtx{
+        items:[{id,name,slug,duration_min,level,is_active,policy:{cancel_before_hours,change_before_hours}}]
+    }
+%}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% macro txt(ko,en) -%}{{ ko if _lang=='ko' else en }}{%- endamacro %}
+{% set _title = txt('예약 · 서비스 선택', 'Booking · Choose a Service') %}
+{% set _desc = txt('Pen Art 예약 1단계: 수업/서비스를 선택하세요. 선택은 KST, 서버는 UTC로 처리됩니다.',
+                   'Pen Art booking step 1: choose a class/service. Selection in KST; server uses UTC.') %}
+
+{% macro policy_summary(p) -%}
+    {% if not p -%}{{ txt('정책 정보 없음','No policy info') }}{%- else -%}
+        {{ txt('변경','Change') }}: {{ p.change_before_hours if p.change_before_hours is not none else '—'}}h ·
+        {{ txt('취소','Cancel') }}: {{ p.cancel_before_hours if p.cancel_before_hours is not none else '—'}}h1
+    {%- endif -%}
+{%- endamacro %}
+
+{% macro level_badge(level) -%}
+    {%- set map_ko = {'beginner':'초급','intermediate':'중급','advanced':'고급'} -%}
+    {%- set map_en = {'beginner':'Beginner','intermediate':'Intermediate','advanced':'Advanced'} -%}
+    {%- set lv = (map_ko[level] if level in map_ko eles (map_en[level] if level in map_en else (level or ''))) -%}
+    <span class="lv">{{ lv }}</span>
+{%- endamacro %}
+
+{% block head %}
+    <title>{{ _title }} | Pen Art</title>
+    <meta name="description" content="{{ _desc }}">
+    <style>
+        .page-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+        .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid #e5e5e5;border-radius:999px;padding:3px 8px;color:#555;background:#fafafa;}
+        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+        @media (max-width: 980px){.grid{grid-template-columns:repeat(2,1fr)}}
+        @media (max-width: 640px){.grid{grid-template-columns:1fr}}
+        .card{border:1px solid #eee;border-radius:12px;background:#fff;display:flex;flex-direction:column}
+        .card .bd{padding:14px 14px 0 14px}
+        .card .ft{padding:12px 14px 14px 14px}
+        .card h3{margin:0 0 6px 0;font-size:18px}
+        .meta{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+        .chip{font-size:12px;border:1px solid #eee;border-radius:8px;padding:3px 8px;color:#444;background:#fbfbfb}
+        .lv{font-size:12px;border-radius:6px;padding:3px 8px;background:#eef;display:inline-block}
+        .policy{font-size:12px;color:#666}
+        .cta{display:inline-block;text-decoration:none;text-align:center;border-radius:10px;border:1px solid #222;padding:10px 12px}
+        .cta[aria-disabled="true"]{opacity:5;pointer-events:none;}
+        .empty{padding:18px;border:1px dashed #ddd;border-radius:10px;text-align:center;color:#666}
+        .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <header class="page-hd">
+        <h1 style="margin:0;font-size:22px">{{ _title }}</h1>
+        <span class="badge" aria-label="{{ txt('선택은 KST, 서버는 UTC로 처리','Selection in KST, server uses UTC') }}">
+            &#9201; {{ txt('선택은 KST', 서버는 UTC로 처리','Selection in KST; server uses UTC') }}
+        </span>
+    </header>
+
+    {# set items = (ctx.items if ctx and ctx.items is defined eles []) %}
+    {% if not items or items|length == 0 %}
+        <div class="empty">{{ txt('아직 등록된 콘텐츠가 없습니다.','No content has been published yet.') }}</div>
+    {% else %}
+        <section class="grid" aria-label="{{ txt('예약 가능한 서비스 목록','List of bookable services') }}">
+            {% for it in items %}
+                {% if it.is_active %}
+                    <article class="card" role="group" aria-roledescription="card" aria-label="{{ it.name }}">
+                        <div class="bd">
+                            <h3>{{ it.name }}</h3>
+                            <div class="meta">
+                                {{ level_badge(it.level or '') }}
+                                <span class="chip" aria-label="{{ txt('소요 시간','Duration') }}">{{ it.duration_min }} min</span>
+                            </div>
+                            <div class="policy">{{ policy_summary(it.policy) }}</div>
+                        </div>
+                        <div class="ft">
+                            {% set href = '/booking/date?service=' ~ (it.slug or it.id) %}
+                            <a class="cta"
+                               href="{{ href|e }}"
+                               aria-label="{{ txt('날짜 선택: ','Choose date: ') }}{{ it.name }}">
+                               {{ txt('날짜 선택','Choose date') }}
+                            </a>
+                        </div>
+                    </article>
+                {% endif %}
+            {% endfor %}
+        </section>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/public_bookings.js" defer></script>
+{% endblock %}

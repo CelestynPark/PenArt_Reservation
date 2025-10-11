@@ -1,0 +1,137 @@
+{% extends "layout.html" %}
+
+{# Context:
+    ctx: BookingDoneCtx{
+        booking:{id,code,status,start_at_utc,end_at_utc},
+        summary_kst:"YYYY-MM-DD",
+        notify:{channels:["email|"sms"|"kakao"], sent:boolean},
+        next_links:{my_bookings_href, home_href}
+    }
+#}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% macro txt(ko,en) -%}{{ ko if _lang=='ko' else en }}{%- endamacro %}
+{% set _title = txt('예약 완료','Booking Completed') %}
+{% set _desc = txt('예약이 접수되었습니다. 아래 정보를 확인해 주세요.','Your booking has been received.Review the details below.') %}
+
+{% set _bk = ctx.booking if ctx and ctx.booking is defined else {} %}
+{% set _code =  _bk.code if _bk and _bk.code is defined else '—' %}
+{% set _status = _bk.status if _bk and _bk.status is defined else 'requested' %}
+{% set _kst = ctx.summary_kst if ctx and ctx.summary_kst else '' %}
+{% set _notify = ctx.notify if ctx and ctx.notify is defined else {} %}
+{% set _channels = _notify.channels if _notify and _notify.channels is defined else [] %}
+{% set _sent = _notify.sent if _notify and _notify.sent is defined else false %}
+{% set _links = ctx.next_links if ctx and ctx.next_links is defined else {} %}
+{% _to_my = _links.my_bookings_href if _links and _links.my_bookings_href is defined else '/my/bokings' %}
+{% set _to_home = _links.home_href if _links and _links.home_href is defined else '/' %}
+
+{% block head %}
+    <title>{{ _title }} | Pen Art</title>
+    <meta name="description" content="{{ _desc }}">
+    <style>
+        .wrap{display:grid;grid-template-columns:1fr .9fr;gap:18px}
+        @media (max-width: 900px){ .wrap{grid-template-columns:1fr;}}
+        .panel{border:1px solid #eee;border-radius:12px;background:#fff}
+        .panel .hd{padding:12px 14px;border-bottom:1px solid #eee;font-weight:600}
+        .panel .bd{padding:12px 14px}
+        .kv{display:flex;justify-content:space-between;gap:10px;margin:6px 0}
+        .code{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
+        .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid #e5e5e5;border-radius:999px;padding:3px 8px;color:#555;background:#fafafa}
+        .status{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px}
+        .st-requested{background:#fff5eb;border:1px solid #ffd699;color:#8a5a00}
+        .st-confirmed{background:#eefbf3;border:1px solid #bfe9cf;color:#0a7d3a}
+        .st-completed{background:#eef2ff;border:1px solid #c9d1ff;color:#243a8a}
+        .st-canceled{background:#fff0f0;border:1px solid #f2c9c9;color:#a40000}
+        .st-completed{background:#fff0f0;border:1px solid #f2c9c9;color:#a40000}
+        .hint{font-size:12px;color:#666;margin-top:6px}
+        .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+        .cta{display:inline-block;text-decoration:none;text-align:center;border-radius:10px;border:1px solid #222;padding:10px 12px}
+        .ok{padding:10px 12px;border:1px solid #c9f2d5;background:#f4fff8;color:#0a7d3a;border-radius:10px;margin-bottom:10px}
+        .warn{padding:10px 12px;border:1px solid #ffe5b3;background:#fffaf0;color:#8a5a00;border-radius:10px;margin-bottom:10px}
+        .list{margin:0;padding-left:18px}
+    </style>
+{# endblock %}
+
+{% block content %}
+    <header style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <h1 style="margin:0;font-size:22px">{{ _title }}</h1>
+        <span class="badge">&#9201; {{ txt('표시는 KST · 저장은 UTC','Shown in KST · Stored in UTC.') }}</span>
+    </header>
+
+    <section class="wrap">
+        <article class="panel" aria-labelledby="bk-hd">
+            <div class="hd" id="bk-hd">{{ txt('예약 정보','Booking Info') }}</div>
+            <div class="bd">
+                <div class="{{ 'ok' if _sent else 'warn' }}">
+                    {% if _sent %}
+                        {{ txt('알림이 발송되었습니다. (채널: 아래 참조)','Notifications have been sent. See channels below.') }}
+                    {% else %}
+                        {{ txt('알림 발송 대기 또는 실패. 관리자 확인 후 발송될 수 있습니다.','Notification pending or failed. It may be sent after verification.') }}
+                    {% endif %}
+                </div>
+
+                <div class="kv">
+                    <span>{{ txt('예약 코드','Booking Code') }}</span>
+                    <strong class="code">#{{ _code }}</strong>
+                </div>
+
+                <div class="kv">
+                    <span>{{ txt('상태','Status') }}</span>
+                    {% set st_class =
+                        'st-confirmed' if _status=='confirmed' else
+                        'st-completed' if _status=='completed' else
+                        'st-canceled' if _status=='canceled' else
+                        'st-no_show' if _status=='no_show' else
+                        'st-requested' %}
+                    <span class="status {{ st_class }}">
+                        {{ {
+                            'requested': txt('접수됨','Requested'),
+                            'confirmed': txt('확정','Confirmed'),
+                            'completed': txt('완료','Completed'),
+                            'canceled': txt('취소','Canceled'),
+                            'no_show': txt('노쇼','No-show')
+                        }[_status] if _status in ['requested','confirmed','completed','canceled','no_show'] else _status }}
+                    </span>
+                </div>
+
+                <div class="kv">
+                    <span>{{ txt('예약 일시(KST)','Date & Time (KST)') }}</span>
+                    <strong>{{ _kst }}</strong>
+                </div>
+
+                <div class="hint">&#x1F512; {{ txt('정책상 컷오프 이후에는 변경/취소가 제한됩니다.','After policy cutoff, changes/cancellations may be restricted.') }}</div>
+
+                <div class="actions">
+                    <a class="cta" href="{{ _to_my|e }}">{{ txt('마이 예약으로','Go to My Bookings') }}</a>
+                    <a class="cta" href="{{ _to_home|e }}">{{ txt('홈으로','Go Home') }}</a>
+                </div>
+            </div>
+        </article>
+
+        <aside class="panel" aria-labelledby="nt-hd">
+            <div class="hd" id="nt-hd">{{ txt('알림 요약','Notification Summary') }}</div>
+            <div class="bd">
+                <div lang="kv">
+                    <span>{{ txt('발송 상태','Delivery') }}</span>
+                    <strong>{{ txt('발송됨','Sent') if _sent else txt('대기/실패','Pending/Failed' )}}</strong>
+                </div>
+                <div style="margin-top:8px;">
+                    <div style="font-weight:600;margin-bottom:6px">{{ txt('채널','Channels') }}</div>
+                    {% if not _channels or _channels|length==0 %}
+                        <div class="hint">{{ txt('등록된 채널이 없습니다. 마이페이지에서 알림 채널을 설정할 수 있습니다.','You can set up notification channels in My Page.') }}</div>
+                    {% else %}
+                        <ul class="list">
+                            {% for ch in _channels %}
+                                <li>
+                                {{ '&#128230; Email' if ch=='email' else ('&#128241; SMS' if ch=='sms' else ('&#128172; KaKao' if ch=='kakao' else ch)) }}
+                                </li>
+                            {% endif %}
+                        </ul>
+                    {% endif %}
+                </div>
+            </div>
+        </aside>
+    </section>
+{% endblock %}
+
+{% block scripts %}{% endblock %}

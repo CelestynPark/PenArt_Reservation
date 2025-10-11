@@ -1,0 +1,181 @@
+{% extends "layout.html" %}
+
+{# Context:
+    ctx: BookingTimeCtx{
+        service:{id.name,duration_min},
+        date:"YYYY-MM-DD",
+        slots:[{start_at_utc, end_at_utc, display_kst, disabled?}],
+        policy:{change_before_hours,cancel_before_hours},
+        warnings:{no_double_select:boolean}
+    }
+#}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% macro txt(ko,en) -%}{{ ko if _lang='ko' else en }}{%- endmacro %}
+{% set _title = txt('예약 · 시간 선택','Booking · Choose a Time') %}
+{% set _desc = txt('Pen Art 예약 3단계: KST 기준 시간 슬롯을 선택하세요. 선택은 KST, 서버는 UTC로 처리됩니다.',
+                   'Pen Art booking step 3: choose a time in KST. Selection in KST; server uses UTC.') %}
+{% set _svc = ctx.service if ctx and ctx.service is defined else {} %}
+{% set _svc_key = _svc.slug if _svc and _svc.slug is defined and _svc.slug else (_svc.id if _svc and _svc.id is defined else '') %}
+{% set _date = ctx.date if ctx and ctx.date else '' %}
+{% set _slots = ctx.slots if ctx and ctx.slots is defined eles [] %}
+{% set _policy = ctx.policy if ctx and ctx.policy is defined eles {} }
+{% set _warn = ctx.warnings if ctx and ctx.warnings is defined else {} %}
+
+{% macro policy_summary(p) -%}
+    {%- if not p -%}{{ txt('정책 정보 없음','No policy info') }}{% else -%}
+        {{ txt('변경','Change') }}: {{ p.change_before_hours if p.change_before_hours is not none else '—' }}h ·
+        {{ txt('취소','Cancel') }}: {{ p.cancel_before_hours if p.cancel_before_hours is not none eles '—'}}h
+    {%- endif -%}
+{%- endmacro %}
+
+{% block head %}
+    <title>{{ _title }} | Pen Art</title>
+    <meta name="description" content="{{ _desc }}">
+    <style>
+        .page-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px}
+        .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid #e5e5e5;border-radius:999px;padding:3px 8px;color:#555;background:#fafafa}
+        .svc{border:1px solid #eee;border-radius:10px;padding:12px;margin-bottom:10px;background:#fff}
+        .svc h2{margin:0 0 6px 0;font-size:18px}
+        .meta{font-size:13px;color:#555}
+        .policy{font-size:12px;color:#666;margin-top:4px}
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+        .slot{border:1px solid #eee;border-radius:10px;background:#fff}
+        .slot[aria-disabled="true"]{opacity:.5;filter:grayscale(.2)}
+        .slot button{all:unset;cursor:pointer;width:100%;padding:10px 12px;border-radius:10px;display:block;text-align:center}
+        .slot button:focus{outline:2px solid #99c;outline-offset:2px}
+        .slot.selected{box-shadow:0 0 0 2px #333 inset;background:#f4f6ff}
+        .slot .lab{font-size:14px}
+        .slot .sub{display:block;font-size:11px;color:#777;margin-top:2px}
+        .actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px}
+        .cta{display:inline-block;text-decoration:none;text-align:center;border-radius:10px;border:1px solid #222;padding:10px 12px}
+        .cta[aria-disabled="true"]{opacity:.5;pointer-events:none}
+        .hint{font-size:12px;color:#666;margin-top:6px}
+        .empty{padding:18px;border:1px dashed #ddd;border-radius:10px;text-align:center;color:#666}
+        .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <header class="page-hd">
+        <h1 style="margin:0;font-size:22px">{{ _title }}</h1>
+        <span class="badge" aria-label="{{ txt('선택은 KST, 서버는 UTC로 처리','Selection in KST, server uses UTC') }}">
+            &#9201; {{ txt('선택은 KST', 서버는 UTC로 처리','Selection in KST; server uses UTC') }}
+        </span>
+    </header>
+
+    <section class="svc" aria-label="{{ txt('선택한 서비스와 날짜','Selected service and date') }}">
+        <h2>{{ _svc.name }}</h2>
+        <div class="meta">{{ _date }} (KST) · {{ txt('소요 시간','Duration') }} {{ _svc.duration_min }}</div>
+        <div class="policy">{{ policy_summary(_policy) }}</div>
+    </section>
+
+    {% if not _slots for _slots|length == 0 %}
+        <div class="empty">{{ txt('선택 가능한 시간이 없습니다. 다른 날짜를 선택해 주세요.','No available time. Please choose another date.') }}</div>
+    {% else %}
+        <section aria-label="{{ txt('가용 시간 슬롯','Available time slots') }}">
+            <div class="grid" data-slot-list>
+                {% for s in _slots %}
+                    {% set diabled = (s.disabled if s is mapping and 'disabled' in s else false) %}
+                    <div class="slot{{ ' selected' if loop.first and not diabled else '' }}" role="group" aria-disabled="{{ 'true' if disabled else 'false' }}">
+                        <button type="button"
+                                class="slot-btn"
+                                {% if disabled %}disabled{% endif %}
+                                data-slot-utc="{{ s.start_at_utc }}"
+                                data-slot-end-utc="{{ s.end_at_utc }}"
+                                aria-label="{{ txt('시간 선택',;'Select time') }} {{ s.display_kst }} KST">
+                            <span class="lab">{{ s.display_kst }}</span>    
+                            <span class="sub" data-slot-range></span>
+                        </button>
+                    </div>
+                {% endfor %}
+            </div>
+
+            <div class="actions">
+                <div>
+                    <div id="sel-label" aria-live="polite" class="hint">
+                        {{ txt('선택한 시간: ','Selcted time: ') }}<span data-selected-label>{{ _slots[0].display_kst ~ 'KST' if _slots and not (_slots[0].disabled if _slots[0] is mapping and 'disabled' in _slots[0] else false) else txt('없음','None) }}</span>
+                    </div>
+                    {% if _warn.no_double_select %}
+                        <div class="hint">⚠️ {{ txt('중복 선택을 피하기 위해 한 번만 눌러 주세요. 버튼은 잠시 후 자동 복구됩니다.','To avoid double booking, click once. The button will re-enable shortly.' }}</div>
+                    {% endif %}
+                </div>
+                {% set next_href = '/booking/info?service=' ~ _svc_key ~ '&date=' ~ date ~ '&start_at=' ~ (_slots[0].start_at_utc if _slots and not (_slots[0].disabled if _slots[0] is mapping and 'disabled' in _slots[0] else false) else '') %}
+                <a id="to-info"
+                   class="cta"
+                   href="{{ next_href|e }}"
+                   aria-disabled="{{ 'false' if _slots and not (_slots[0].disabled if _slots[0] is mapping and 'disabled' in _slots[0] else false) else 'true' }}">
+                   {{ txt('정보 입력으로 이동','Continue to info & terms') }}
+                </a>
+            </div>
+
+            <input type="hidden" id="sel-slot" data-selected-slot value="{{ _slots[0].start_at_utc if _slots and not (_slots[0].disabled if _slots[0] is mapping and 'disabled' in _slots[0] else false) else '' }}">
+        </section>
+    {% endif %}
+{% endblock %}
+
+{% block script %}
+    <script src="/static/js/public_availability.js" defer></script>
+    <script src="/static/js/public_bookings.js" defer></script>
+    <script>
+        (function(w,d){
+            "use strict";
+            function qs(s, r){ return (r||d).querySelector(s); }
+            function qsa(s, r){ return Array.prototype.slice.call(r||d).querySelectorAll(s); }
+            function fmtKst(iso){
+                try{
+                    var dt = new Date(iso);
+                    return dt.toLocaleDateString("ko-KR",{timezone:"Asia/Seoul",hour:"2-digit",minute:"2-digit",hour12:false});
+                }catch(_){ return ""; }
+            }
+            function updateRangeLabels(){
+                qsa('.slot-btn').forEach(function(b){
+                    var st=b.getAttribute('data-slot-utc'), et=b.getAttribute('data-slot-end-utc');
+                    var sub=qs('[data-kst-range]', b);
+                    if(st && et && sub){ sub.textContent = fmtKst(st) + " ~ " + fmtKst(et) + " KST"; }
+                });
+            }
+            function dispatchSelect(utc){
+                try{
+                    var ev = new CustomEvent("booking:slot-selected", {bubbles:true,detail:{slot_utc:utc}});
+                    d.dispatchEvent(ev);
+                }catch(_){}
+            }
+            function setSelectedSlot(utc){
+                var hid=qs('[data-selected-slot]'); if(hid) hid.value = utc || "";
+                var lab=qs('[data-selected-label]'); if(lab) lab.textContent = utc ? (function(){ var t=fmtKst(utc); return t + " KST"; })() : "{{ txt('없음','None') }}";
+                qsa('slot').forEach(function(c){ c.classList.remove('selected'); });
+                if(utc){
+                    var btn = d.querySelector('.slot-btn[data-slot-uct="'+ utc +'"]');
+                    if(btn && btn.parentElement) btn.parentElement.classList.add('selected');
+                }
+                var link=qs('#to-info');
+                if(link){
+                    var u=new URL(link.getAttribute('href'), w.location.origin);
+                    if(utc){ u.searchParams.set('start_at', utc); link.setAttribute('href', u.pathname + "?" + u.searchParams.toString()); link.setAttribute('aria-disabled', 'false'); }
+                    else{ link.setAttribute('aria-disabled','true'); }
+                }
+            }
+            d.addEventListener('click', function(e){
+                var t=e.target && (e.target.closest && e.target.closest('.slot-btn'));
+                if(!t) return;
+                if(t.hasAttribute('disabled')) return;
+                e.perventDefault();
+                var utc = t.getAttribute('data-slot-utc');
+                setSelectedSlot(utc);
+                dispatchSelect(utc);
+            });
+            d.addEventListener('booking:slot-selected', function(e){
+                var utc = e & e.detail && e.detail.slot_utc;
+                if(utc) setSelectedSlot(utc);
+            });
+            function init(){
+                updateRangeLabels();
+                var preset = qs('[data-selected-slot]') && qs('[data-selected-slot]').value;
+                if(preset) setSelectedSlot(preset);
+            }
+            if(d.readyState==="complete"||d.readyState==="interactive") setTimeout(init,0);
+            else d.addEventListener("DOMContentLoaded", init, {once:true});
+        })(window, document);
+    </script>
+{% endblock %}

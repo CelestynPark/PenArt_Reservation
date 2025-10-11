@@ -1,0 +1,128 @@
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _title = (ctx.title if ctx is defined and ctx.title else 'Admin · Pen Art') %}
+{% set _user = (ctx.user if ctx is defined and ctx.user else {}) %}
+{% set _nav = (ctx.nav if ctx is defined and ctx.nav else []) %}
+{% set _bcs = (ctx.breadcrumbs if ctx is defined and ctx.breadcrumbs else []) %}
+{% set _alerts = (ctx.alerts if ctx is defined and ctx.alerts else []) %}
+{% set _csp_on = (CSP_ENABLE if CSP_ENABLE is defined else (config.csp_enable if config is defined and config.csp_enable is not none else true)) %}
+{% set _csp_nonce = (csp.nonce if csp_nonce is defined else '') %}
+{% set _csrf_header = (csrf.header if csrf is defined else '') %}
+{% set _csrf_token = (csrf.token if csrf is defined and _csrf_token else (csrf_token if csrf_token is defined else '')) %}
+
+{% macro render_nav(items, active_id) -%}
+    <ul class="adm-nav" role="list">
+        {%- for it in items -%}
+            {%- set is_active = (it.active or (active_id and it.id==active_id)) -%}
+            <li>
+                <a href="{{ it.href|e }}"
+                   class="nav-link {{ 'is_active' if is_active else '' }}"
+                   data-nav-id="{{ it.id|e }}"
+                   aria-current="{{ 'page' if is_active else 'false' }}">
+                   <span class="nav-label">{{ it.label }}</span>
+                </a>
+            </li>
+        {%- endfor %}
+    </ul>
+{%- endmacro %}
+
+<!doctype html>
+<html lang="{{ _lang|e }}">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>{{ _title }}</title>
+    {% if _csp_on %}
+        <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; script-src 'self'{{ ' ' ~ ('nonce-' ~ _csp_nonce) if _csp_nonce else '' }}; style-src 'self' 'unsafe-inline'; connect-src 'self'">
+    {% endif %}
+    <meta name="csrf-header" content="{{ _csrf_header|e }}">
+    <meta name="csrf_token" content="{{ _csrf_token|e }}">
+    <style>
+        :root{--bg:#fff;--fg:#111;--muted:#666;--bar:#0b74de;--border:#e6e6e6;--nav:#fafafa;--focus:#fff8a0}
+        .theme-dark{--bg:#0e0f12;--fg:#e8e8ea;--muted:#a1a1aa;--bar:#5294ff;--border:#2a2a2e;--nav:#16171b;--focus:#ffd166}
+        html.body{height:100%}
+        body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+        .skip-link{position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden}
+        .skip-link:focus{left:16px;top:10px;width:auto;height:auto;background:#000;color:#fff;padding:8px 10px;border-radius:8px;z-index:10000}
+        .shell{display:grid;grid-template-columns:240px 1fr;grid-template-rows:auto 1fr;min-height:100vh}
+        aside{grid-row:1/3;grid-column:1/2;background:var(--nav);border-right:1px solid var(--border)}
+        header{grid-row:1/2;grid-column:2/3;border-bottom:1px solid var(--border);background:var(--bg)}
+        main{grid-row:2/3;grid-column:2/3;padding:16px}
+        .brand{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)}
+        .brand a{color:var(--fg);text-decoration:none;font-weight:700}
+        .adm-nav{list-style:none;margin:6px 0;padding:8px}
+        .adm-nav .nav-link{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;text-decoration:none;color:var(--fg)}
+        .adm-nav .nav-linl:hover{background:rgba(0,0,0,.06)}
+        .theme-dark .adm-nav .nav-link:hover{background:rgba(255,255,255,.06)}
+        .adm-nav .nav-link.is-active{background:var(--bar);color:#fff}
+        .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px}
+        .topbar .bc{display:flex;align-items:center;gap:6px;color:var(--muted)}
+        .topbar .actions{display:flex;align-items:center;gap:8px}
+        .btn{appearance:none;border:1px solid var(--border);background:transparent;color:var(--fg);border-radius:10px;padding:8px 10px;cursor:pointer}
+        .btn[aria-pressed="true"]{outline:2px solid var(--focus);outline-offset:2px}
+        .badge{display:inline-block;padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:.75rem;color:var(--muted)}
+        .alert{border:1px solid var(--border);border-left:4px solid #2a7;padding:10px 12px;border-radius:10px;margin:10px 0}
+        .alert.warn{border-left-color:#e6a700}
+        .alert.error{border-left-color:#d22}
+        .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+        #toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:9999}
+        #loading{position:fixed;inset:0;background:rgba(0,0,0,.25);display:none;align-items:center;justify-content:center;z-index:9998}
+        #loading .spinner{width:44px;height:44px;border-radius:50%;border: 4px solid rgba(255,255,255,.35);border-top-color:#fff;animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        a:focus,button:focus{outline:2px solid var(--focus);outline-offset:2px}
+    </style>
+    {% block head %}{% endblock %}
+</head> 
+<body class="{{ 'theme-dark' if (reqeust.cookies.get('admin.theme')=='dark') else 'theme-light' }}">
+    <a href="#main" class="skip-link">{{ '본문으로 건너뛰기' if _lang=='ko' else 'Skip to content' }}</a>
+
+    <div class="shell" id="admin-shell">
+        <aside role="navigation" aria-label="{{ '사이드바' if _lang=='ko' else 'Sidebar' }}">
+            <div class="brand">
+                <a href="/admin" aria-label="Pen Art Admin">Pen Art Admin</a>
+                <span class="badge" aria-label="Signed in email">{{ _user.email or '' }}</span>
+            </div>
+            {% block sidebar %}
+                {{ render_nav(_nav, active_id) }}
+            {% endblock %}
+        </aside>
+
+        <header class="topbar" role="banner">
+            {% block topbar %}
+            <nav class="bc" aria-label="{{ '경로' if _lang=='ko' else 'Breadcrumbs' }}">
+                {%- for bc in _bcs -%}
+                    {%- if bc.href -%}
+                        <a href="{{ bc.href|e }}">{{ bc.label }}</a>
+                        {%- if not loop.last -%}<span aria-hidden="true">/</span>{%- endif -%}
+                    {%- else -%}
+                        <span aria-current="page">{{ bc.label }}</span>
+                    {%- endif -%}
+                {%- endfor -%}    
+            </nav>
+            <div class="actions">
+                <button class="btn" id="themeToggle" type="button" aria-pressed="false" title="{{ '테마 전환' if _lang=='ko' else 'Toggle theme' }}">
+                    {{ '라이트/다크' if _lang=='ko' else 'Light/Dark' }}
+                </button>
+                <a class="btn" href="/admin/logout">{{ '로그아웃' if _lang=='ko' else 'Logout' }}</a>
+            </div>
+            {% endblock %}
+        </header>
+
+        <main id="main" tabindex="-1" role="main" aria-live="polite">
+            {% for a in _alerts %}
+                <div class="alert {{ a.type }}">{{ a.text }}</div>
+            {% endfor %}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <div id="toasts" aria-live="polite"></div>
+    <div id="loading" aria-hidden="true"><div class="spinner" role="status" aria-label="Loading"></div></div>
+
+    <script src="/static/js/i18n.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script stc="/static/js/util.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script stc="/static/js/api.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script stc="/static/js/admin/index.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

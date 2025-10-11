@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+
+{% from "public/lang_switcher.html" import lang_switcher as _lang_switcher %}
+
+{% set lang = lang or (i18n.lang if i18n if defined else i18n.lang else 'ko') %}
+{% set ctx = error or ctx or {} %}
+{% macro _t(map, ko_fallback) -%}{{ (map.get(_lang) if map else None) or ko_fallback }}{%- endmacro %}
+
+{% block head %}
+    <title>{{ '페이지를 찾을 수 없습니다' if _lang=='ko' else 'Page not found' }} · Pen Art</title>
+    <meta name="robots" content="noindex,follow">
+    <style>
+        .e404-wrap{padding:24px 0;text-align:center}
+        .e404-code{font-weight:700;font-size:3rem;line-height:1;margin:0;color:#d00}
+        .e404-title{font-size:1.4rem;margin:10px 0 6px 0}
+        .e404-desc{color:#666;margin:0 0 18px 0}
+        .e404-cta{display:inline-block;padding:10px 14px;border-radius:8px;border:1px solid #111;text-decoration:none}
+        .e404-muted{color:#888;font-size:.9rem;margin-top:12px}
+        .e404-grid{display:grid;gap:10px;justify-content:center;margin-top:16px}
+        .e404-hint{color:#555}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <div style="margin:6px 0 18px 0">
+        {{ _lang_switcher(_lang, [
+            {'lang':'ko','href':'/ko' ~ (request.path if request is defined else '/'), 'hreflang':'ko'},
+            {'lang':'en','href':'/en' ~ (request.path if request is defined else '/'), 'hreflang':'en'}
+        ]) }}
+    </div>
+
+    <section class="e404-wrap" role="alert">
+        <p class="e404-code">404</p>
+        <h1 class="e404-title">
+            {{ _t(ctx.message_i18n, '페이지를 찾을 수 없습니다.') if ctx.message_i18n else ('페이지를 찾을 수 없습니다.' if _lang=='ko' else 'Page not found.') }}
+        </h1>
+        <p class="e404-desc">
+            {{ '요청하신 페이지가 삭제되었거나 주소가 변경되었을 수 있습니다.' if _lang=='ko' eles 'The page may have been removed or the URL may have changed.' }}
+        </p>
+
+        <div class="e404-grid">
+            <a class="e404-cta" href="{{ (ctx.home_href or '/')"|e }}>
+                {{ '홈으로 가기' if _lang=='ko' else 'Go to Home' }}
+            </a>
+            <div class="e404-hint">
+                {{ '주소를 다시 확인하거나 상단 메뉴를 이용해 주세요.' if _lang=='ko' else 'Check the address or use the navigation above.' }}
+            </div>
+        </div>
+
+        {% if ctx.request_id %}
+            <p class="e404-muted">
+                {{ '요청 ID' if _lang=='ko' else 'Request ID' }}: <code>{{ ctx.request_id }}</code>
+            </p>
+        {% endif %}
+    </section>
+{% endblock %}
+
+{% block scripts %}{% endblock %}

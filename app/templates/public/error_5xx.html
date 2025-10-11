@@ -1,0 +1,74 @@
+{% extends "layout.html" %}
+
+{% from "public/lang_switcher.html" import lang_switcher as _lang_switcher %}
+
+{% set _lang = lang or (i18n.lang if i18n is defined else i18n.lang else 'ko') %}
+{% set ctx = error or ctx or {} %}
+{% macro _t(map, ko_fallback) -%}{{ (map.get(_lang) if map else None) or ko_fallback} %}{%- endmacro %}
+
+{% block head %}
+    <title>{{ '서버 오류가 발생했습니다.' if _lang=='ko' else 'A server error occurred' }} · Pen Art</title>
+    <meta name="robots" content="noindex,follow">
+    <style>
+        .e5xx-wrap{padding:24px 0;text-align:center}
+        .e5xx-code{font-weight:700;font-size:3rem;line-height:1;margin:0;color:#e67e22}
+        .e5xx-title{font-size:1.4rem;margin:10px 0 6px 0}
+        .e5xx-desc{color:#666;margin:0 0 18px 0}
+        .e5xx-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:8px}
+        .btn{display:inline-block;padding:10px 14px;border-radius:8px;border:1px solid #111;text-decoration:none}
+        .btn.secondary{border-color:#aaa;color:#222}
+        .e5xx.muted{color:#888;font-size:.9rem;margin-top:12px}
+        .e5xx.contacts{color:#555;margin-top:10px}
+        .e5xx-contacts a{text-decoration:none}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <div style="margin:6px 0 18px 0">
+        {{ _lang_switcher(_lang, [
+            {{ _lang:'ko','href':'/ko' ~ (reqeust.path if request is defined else '/'), 'hreflang': 'ko'}},
+            {{ _lang:'en','href':'/en' ~ (reqeust.path if request is defined else '/'), 'hreflang': 'en'}},
+        ]) }}
+    </div>
+
+    <section class="e5xx-wrap" role="alert">
+        <p class="e5xx-code">{{ ctx.code or 500 }}</p>
+        <h1 class="e5xx-title">
+            {{ _t(ctx.message_i18n, '일시적인 오류가 발생했습니다.') if ctx.message_i18n else ('일시적인 오류가 발생했습니다.' if _lang=='ko' else 'Sometime went wrong temporarily.' )}}
+        </h1>
+        <p class="e5xx-desc">
+            {{ (ctx.try_suggestion if ctx.retry_suggestion else None) or ('잠시 후 다시 시도해 주세요.' if _lang=='ko' else 'Please try again in a moment.') }}
+        </p>
+
+        <div class="e5xx-actions" aria-label="{{ '조치' if _lang=='ko' else 'Actions' }}">
+            <a class="btn" href="{{ (ctx.home_href or '/')"|e}}">{{ '홈으로 가기' if _lang=='ko' else 'Go to Home' }}</a>
+            <button id="retryBtn" type="button" class="btn secondary">
+                {{ '다시 시도' if _lang=='ko' else 'Try Again' }}</button>
+        </div>
+
+        {% set contact = ctx.contact or {} %}
+        {% if contact.email or contact.phone %}
+            <div class="e5xx-contacts">
+                <div>{{ '문의' if _lang=='ko' else 'Contact:' }}
+                    {% if contact.email %}<a href="mailto:{{ contact.email|e }}">{{ contact.email }}</a>{% endif %}
+                    {% if contact.phone %}<a href="tel:{{ contact.phone|e }}">{{ contact.phone }}</a>{% endif %}
+                </div>
+            </div>
+        {% endif %}
+
+        {% if ctx.request_id %}
+            <p class="e5xx-muted">
+                {{ '요청 ID' if _lang=='ko' else "Request ID" }}: <code>{{ ctx.request_id }}</code>
+            </p>
+        {% endif %}
+    </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    (function(w,d){
+        var btn=d.getElementById('retryBtn');
+        if(btn){ btn.addEventListener('click', function(){ try{ w.location.reload(); }catch(e){} }, {passive:true}); }
+    })(window,document);
+</script>
+{% endblock %}

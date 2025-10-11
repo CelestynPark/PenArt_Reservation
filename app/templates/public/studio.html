@@ -1,0 +1,178 @@
+{% extends "layout.html" %}
+
+{% Context:
+    ctx: StudioCtx{
+        name, bio_i18n:{ko,en}, avatar?:{url,alt},
+        address:{text,lat,lng},
+        hours:{0..6{open,close}},   # 0=Sun..6=Sat
+        notice_i18n?:{ko,en},
+        contact:{phone,email,sns?:[{label,url}]},
+        map:{naver_client_id}
+    }
+#}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko' ) %}
+{% macro t(i18n_obj, fallback='') -%}
+    {%- if not i18n_obj -%}{{ fallback }}{%- elif _lang in i18n_obj -%}{{ i18n_obj[_lang] }}{%- elif 'ko' in i18n_obj -%}{{ i18n_obj['ko'] }}{%- else -%}{{ fallback }}{%- endif -%}
+{%- endamacro -%}
+{% set _title_txt = (ctx.name if ctx and ctx.name else ('스튜디오' if _lang=='ko' else 'Studio' )) %}
+{% set _desc_txt = t(ctx.bio_i18n, 'Pen Art Studio') | striptags | truncate(160) %}
+{%% set _og_img = (ctx.avatar.url if ctx and ctx.avatar and ctx.avatar.url else '') %}
+{% set _url = (request.base_url if request is defined else '') %}
+
+{% macro dow_label(i) -%}
+    {% set ko = ['일','월','화','수','목','금','토'] -%}
+    {% set en = ['Sun','Mon',"Tue",'Wed','Thu','Fri','Sat'] -%}
+    {{ (ko[i] if _lang=='ko' else en[i]) }}
+{%- endamacro %}
+
+{% block head %}
+    <title>{{ _title_txt }} | Pen Art</title>
+    <meta name="description" content="{{ _desc_txt }}">
+    <meta property="og:title" content="{{ _title_txt }}">
+    <meta property="og:description" content="{{ _desc_txt }}">
+    {% if og_img %}<meta property="og:image" content="{{ _og_img|e }}">{% endif %}
+    {% if _url %}><meta property="og:url" content="{{ _url|e }}">{% endif %}
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <style>
+        .studio{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}
+        @media (max-width: 880px){.studio{grid-template-columns:1fr}}
+        .card{border:1px solid #eee;border-radius:12px;background:#fff}
+        .card .hd{padding:12px 14px;border-bottom:1px solid #eee;font-weight:700}
+        .card .bd{padding:14px}
+        .about{line-height:1.75}
+        .avatar{width:100%;max-height:300px;object-fit:cover;border-radius:10px}
+        .hours{width:100%;border-collapse:collapse}
+        .hours th,.hours td{padding:8px 10px;border-bottom:1px solid #f0f0f0;text-align:left;font-size:14px}
+        .hours th{color:#666;font-weight:600;width:28%}
+        .muted{color:#666}
+        .sns{display:flex;gap:10px;flex-wrap:wrap}
+        .sns a{text-decoration:none;color:#225;font-size:13px}
+        #map{width:100%;height:380px;background:#f6f6f6;border:1px solid #eee;border-radius:12px}
+        .notice{font-size:13px;color:#555}
+        .notfound{padding:18px;border:1px dashed #ddd;border-radius:10px;color:#666;text-align:center}
+    </style>
+{% endblock %}
+
+{% block content %}
+    {% if not ctx %}
+        <div class="notfound">{{ '스튜디오 정보가 아직 준비되지 않았습니다.' if _lang=='ko' else "Studio information is not available yet. }}</div>
+    {% else %}
+        <header style="margin-bottom:12px">
+            <h1 style="margin:0 0 6px 0;font-size:24px">{{ ctx.name or ('스튜디오'if _lang=='ko' else 'Studio') }}</h1>
+            {% if ctx.address and ctx.address.text %}
+                <p class="muted" style="margin:0">{{ ctx.address.text }}</p>
+            {% endif %}
+        </header>
+
+        <section class="studio">
+            <div class="card">
+                <div class="hd">{{ '소개' if _lang=='ko' else 'About' }}</div>
+                <div class="bd">
+                    {% if ctx.avatar and ctx.avatar.url %}
+                        <img class="avatat" src="{{ ctx.avatar.url|e }}" alt="{{ (ctx.avatar.alt or ctx.name or '')|e }}" loading="lazy">
+                        <div style="height:10px"></div>
+                    {% endif %}
+                    <div class="about">
+                        {{ t(ctx.bio_i18n) | safe }}
+                    </div>
+                    {% if ctx.notice_i18n %}
+                        <div style="margin-top:12px" class="notice">
+                            <strong>{{ '열람' if _lang=='ko' else 'Notice' }}:</strong>
+                            {{ t(ctx.notice_i18n) | safe }}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        
+            <div class="card">
+                <div class="hd">{{ '네이버 지도' if _lang=='ko' else 'Naver Map' }}</div>
+                <div class="bd">
+                    <div id="map"
+                         role="region"
+                         aria-label="{{ '스튜디오 위치 지도' if _lang=='ko' else 'Studio location map' }}"
+                         data-client-id="{{ (ctx.map.naver_client_id if ctx.map else '')|e }}"
+                         data-lat="{{ (ctx.address.lat if ctx.address else '') }}"
+                         data-lng="{{ (ctx.address.lng if ctx.address else '') }}">
+                    </div>
+                    <p class="muted" style="margin-top:8px">
+                        {{ '지도가 보이지 않으면 새로고침 해주세요.' if _lang=='ko' else 'If the map does not appear, please refresh the page.' }}
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <section style="display:frid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px">
+            <div class="card">
+                <div class="hd">{{ '운영시간' if _lang=='ko' else 'Hours' }}</div>
+                <div class="bd">
+                    <table class="hours" aria-label="{{ '영업 시간' if _lang=='ko' else 'Business hours' }}">
+                        <tbody>
+                            {% for i in range(0,7) %}
+                                {% set h = (ctx.hours[i] if ctx.hours is defined and ctx.hours else None) %}
+                                <tr>
+                                    <th>{{ dow_label(i) }}</th>
+                                    <td>
+                                        {% if h and h.open and h.close %}
+                                            {{ h.open }} ~ {{ h.close }}
+                                        {% else %}
+                                            <span class="muted">{{ '휴무' if _lang=='ko' else 'Closed' }}</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="hd">{{ '연락처' if _lang=='ko' else 'Contact' }}</div>
+                <div class="bd">
+                    <div style="line-height:1.9">
+                        {% if ctx.contact and ctx.contact.phone %}
+                            <div><strong>{{ '전화' if _lang=='ko' else 'Phone' }}</strong>:
+                                <a href="tel:{{ ctx.contact.phone|e }}">{{ ctx.contact.phone }}</a>
+                            </div>
+                        {% endif %}
+                        {% if ctx.contact and ctx.contact.email %}
+                            <div><strong>Email</strong>:
+                                <a href="mailto:{{ ctx.contact.email|e }}">{{ ctx.contact.email }}</a>
+                            </div>
+                        {% endif %}
+                    </div>
+                    {% if ctx.contact and ctx.contact.sns and ctx.contact.sns|length>0 %}
+                        <div class="sns" style="margin-top:10px">
+                            {% for s in ctx.contact.sns %}
+                                <a href="{{ s.url|e }}" target="_blank" rel="noopener norefferer">{{ s.label or s.url }}</a>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    {# 지도 SDK는 외부에서 lazy-load. 여기서는 키/좌표만 노출하는 자리표시 이벤트를 보낸다. #}
+    <script>
+        (function(w,d){
+            var el=d.getElementById('map'); if (!el) return;
+            var ev; try{ ev= new CustomEvent('penart;map:placeholer-ready', { detail:{
+                clientId: el.getAttribute('data-client-id')||'',
+                lat: el.getAttribute('data-lat')||'',
+                lng: el.getAttribute('data-lng')||''
+            }});}catch(_){ev=d.createEvent('CustomEvent'); ev.initCustomEvent('penart:map:placeholder-ready',true,true,{
+                clientId: el.getAttribute('data-client-id')||'',
+                lat: el.getAttribute('data-lat')||'',
+                lng: el.getAttribute('data-lng')||''
+            });}
+            el.dispatchEvent(ev);
+        })(window, document);
+    </script>
+    <script src="/static/js/public_home.js" defer></script>
+{% endblock %}
+
+

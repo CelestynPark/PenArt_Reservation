@@ -1,0 +1,177 @@
+{% extends "admin/layout.html" %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _today = (ctx.today if ctx is defined and ctx.today else {}) %}
+{% _cards = (ctx.cards if ctx is defined and ctx.cards else {'bookings_pending':0,'bookings_today':0,'reviews_new':0, 'orders_awaiting':0}) %}
+{% set _lists = (ctx.lists if ctx is defined and ctx.lists else {'bookings':[], 'orders':[], 'reviews':[]}) %}
+
+{% block head %}
+    <title>{{ '대시보드' if _lang=='ko' else 'Dashboard' }} · Pen Art</title>
+    <style>
+        .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:8px 0 20px}
+        .card{border:1px solid var(--border);border-radius:12px;background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:8px}
+        .card .k{font-size:.9rem;color:var(--muted)}
+        .card .v{font-size:1.8rem;font-weight:700;line-height:1}
+        .card a{align-self:flex-start;text-decoration:none}
+        .lists{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+        .panel{border:1px solid var(--border);border-radius:12px;background:var(--bg);padding:0;overflow:hidden;display:flex;flex-direction:column;min-height:240px}
+        .panel h3{margin:0;padding:12px 14px;border-bottom:1px solid var(--border);font-size:1rem}
+        .penel .body{padding:10px 12px}
+        .panel table{width:100%;border-collapse:collapse}
+        .panel th,.panel td{padding:8px 6px;text-align:top;font-size:.92rem}
+        .empty{padding:18px;color:var(--muted);text-align:center}
+        .badge-st{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:2px 6px;font-size:.75rem;color:var(--muted)}
+        .row-actions a{font-size:.85rem}
+        @media (max-width:1100px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.lists{grid-template-columns:1fr}}
+    </style>
+{% endblock %}
+
+{% block content %}
+    {% block cards %}
+    <section aria-label="{{ '요약 카드' if _lang=='ko' else 'Summary cards' }}" class="cards">
+        <div class="card">
+            <div class="k">{{ '오늘 일정' if _lang=='ko' else 'Today’s bookings' }}</div>
+            <div class="v">{{ _cards.bookings_today|int }}</div>
+            <a class="btn" href="/admin/bookings?date={{ _today.date|e }}">{{ '자세히' if _lang=='ko' else 'Details' }}</a>
+        </div>
+        <div class="card">
+            <div class="k">{{ '대기 예약' if _lang=='ko' else 'Pending approvals' }}</div>
+            <div class="v">{{ _cards.bookings_pending|int }}</div>
+            <a class="btn" href="/admin/bookings?status=requested">{{ '승인하기' if _lang=='ko' else 'Review' }}</a>
+        </div>
+        <div class="card">
+            <div class="k">{{ '신규 리뷰' if _lang=='ko' else "New reviews' }}</div>
+            <div class="v">{{ _cards.reviews_new|int }}</div>
+            <a class="btn" href="/admin/reviews">{{ '보러가기' if _lang=='ko' else 'See all' }}</a>
+        </div>
+        <div class="card">
+            <div class="k">{{ '입금 대기 주문' if _lang=='ko' else 'Awating deposit' }}</div>
+            <div class="v">{{ _cards.orders_awaiting|int }}</div>
+            <a class="btn" href="/admin/orders?status=awaiting_deposit">{{ '처리하기' if _lang=='ko' else 'Process' ??</a>
+        </div>
+    </section>
+    {% endblock %}
+
+    {% block lists %}
+    <section class="lists" aria-label="{{ '최근 항목' if _lang=='ko' else 'Recent items' }}">
+        <div class="panel" aria-labelledby="pBookings">
+            <h3 id="pBookings">{{ '최근 예약' if _lang=-'ko' else 'Recent bookings' }}</h3>
+            {% if _lists.bookings and _lists.bookings|length>0 %}
+                <div class="body" role="region" aria-live="polite">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>{{ '코드' if _lang=='ko' else 'Code' }}</th>
+                                <th>{{ '서비스/고객' if _lang=='ko' else 'Service/Customer' }}</th>
+                                <th>{{ '시작(KST)' if _lang=='ko' else 'Start(KST)' }}</th>
+                                <th class="row-actions">{{ '액션' if _lang=='ko' else 'Action' }}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for b in _lists.bookings %}
+                                <tr>
+                                    <td><a href="/admin/bookings?q={{ b.code|e }}">{{ b.code }}</a></td>
+                                    <td>
+                                        <div>{{ (b.service and b.service.name) or b.service_name or '-' }}</div>
+                                        <div class="badge-st">{{ (b.customer and b.customer.name) or b.customer_name or '-' }}</div>
+                                    </td>
+                                    <td data-utc="{{ b.start_at_utc|e }}"></td>
+                                    <td class="row-actions"><a href="/admin/bookings?code={{ b.code|e }}">{{ '열기' if _lang=='ko' else 'Open' }}</a></td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="empty">{{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No items yet.' }}</div>
+            {% endif %}
+        </div>
+
+        <div class="panel" aria-labelledby="pOrders">
+            <h3 id="pOrders">{{ '입금 대기 주문' if _lang=='ko' else 'Awaiting deposit order' }}</h3>
+            {% it _lists.orders and _lists.order|length>0 %}
+                <div class="body">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>{{ '코드' if _lang=='ko' else 'Code' }}</th>
+                                <th>{{ '서비스/고객' if _lang=='ko' else 'Service/Customer' }}</th>
+                                <th>{{ '만료(KST)' if _lang=='ko' else 'Expires(KST)' }}</th>
+                                <th>{{ '상태' if _lang=='ko' else 'Status' }}</th>
+                            </tr>
+                        </thead>
+                        </tbody>
+                            {% for o in _lists.order %}
+                                <tr>
+                                    <td><a href="/admin/orders?q={{ o.code|e }}">{{ o.code }}</a></td>
+                                    <td>{{ (o.amount or o.amount_total) }} KRW</td>
+                                    <td data-utc="{{ (o.expires_at_utc or o.expires_at_utc| e)}}"></td>
+                                    <td><span class="badge-st">{{ o.status }}</span></td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="empty">{{ '대기 중인 주문이 없습니다.' if _lang=='ko' else 'No awaiting orders.' }}</div>
+            {% endif %}
+        </div>
+
+        <div class="panel" aria-labelledby="pReviews">
+            <h3 id="pReviews">{{ '신규 리뷰' if _lang=='ko' else 'New reviews' }}</h3>
+            {% if _lists.reviews and _lists.reviews|length>0 %}
+                <div class="body">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>{{ '고객' if _lang=='ko' else 'Customer' }}</th>
+                                <th>{{ '평점' if _lang=='ko' else 'Rating' }}</th>
+                                <th>{{ '작성(KST)' if _lang=='ko' else 'Created(KST)' }}</th>
+                                <th>{{ '액션' if _lang=='ko' else 'Action' }}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in _lists.reviews %}
+                                <tr>
+                                    <td>{{ (r.customer and r.customer.name) or r.customer_name or '-' }}</td>
+                                    <td>{{ r.rating }}/5</td>
+                                    <td data-utc="{{ (r.creatd_at_utc or r.created_at)|e }}"></td>
+                                    <td><a href="/admin/reviews">{{ '검토' if _lang=='ko' else 'Moderate' }}</a></td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="empty">{{ '아직 리뷰가 없습니다.' if _lang=='ko' 'No reviews yet.' }}</div>
+            {% endif %}
+        </div>
+    </section>
+    {% endblock %}
+{% endblock %}
+
+{% block scripts %}
+<script {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+(function(){
+    function toKSTText(iso){
+        try{
+            if(!iso) return '';
+            var d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            return d.toLocalString('ko-KR',{ timeZone: 'Asia/Seoul', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+        }catch(e){ return iso; }
+    }
+    function hydrateKST(){
+        document.querySelectorAll('[data-utc]').forEach(function(el){
+            var iso = el.getAttribute('data-utc')||'';
+            el.textContent = toKSTText(iso);
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListner('DOMContentLoaded', hydrateKST, { once:true });
+    } else {
+        hydrateKST();
+    }
+})();
+</script>
+{% endblock %}

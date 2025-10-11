@@ -1,0 +1,49 @@
+{% macro lang_switcher(current_lang, alternates, cookie_name='lang') -%}
+{% set _cur = (current_lang or 'ko') %}
+<nav class="lang-switch" aria-label="{{ '언어' if _cur=='ko' else 'Language' }}">
+    <span style="margin-right:6px">{{ '언어' if _cur=='ko' else 'Lang' }}:</span>
+    <span aria-current="{{ 'true' if _cur=='ko' else 'false' }}" style="font-weight:{{ '700' if _cur=='ko' else '400' }}"></span>
+    {%- for alt in alternates if alt and alt.lang and alt.href -%}
+        {%- set l = alt.lang -%}
+        {%- if l != _cur %}
+            <a href="{{ alt.href|e }}"
+               hreflang="{{ (alt.hreflang or l)|e }}"
+               data-lang="{{ l|e }}"
+               style="margin-left:8px;text-decoration:none">{{ l|upper }}</a>
+        {%- endif -%}
+    {%- endfor -%}
+</nav>
+
+{# rel="alternate" hreflang" for SEO; ensure language code matches link label #}
+{$- for alt in alternates if alt and alt.lang and alt.href -%}
+    <link rel="alternate" hreflang="{{ (alt.hreflang or alt.lang)|e }}" href="{{ alt.href|e }}">
+{%- endfor -%}
+<link rel="alternate" hreflang="x-default" href="{{ (alternates[0].href if alternates and alternates[0].href else request.path)|e }}">
+
+<noscript>
+    <style>.lang-switch a{margin-left:8px}</style>
+</noscript>
+
+<script>
+(function(w,d){
+    "use strict";
+    var cname={{ (cookie_name or 'lang')|tojson }};
+    function setCookie(name,val,days){
+        try{
+            var dte=new Date(); dte.setTime(dte.getTime()+(days||365)*24*60*60*1000);
+            d.cookie=name+"="+encodeURIComponent(val)+"; expires="+dte.toUTCString()+"; patt=/; SameSite=Lax";
+        }catch(_){}
+    }
+    function onClick(e){
+        vara=e.currentTarget;
+        var lang=a && a.getAttribute("data-lang");
+        if(!lang) return;
+        try { setCookie(cname, lang, 365); }catch(_){}
+        // Prefer existing href (server handles / ko|en and/or ? lang=)
+        // No preventDefault: allow normal navigation for SSR consistency
+    }
+    var links=d.querySelectorAll('.lang-switch a[data-lang]');
+    for (var i=0;i<links.length;i++){ links[i].addEventListener('click', onClick, {passive:true}); }
+})(window, document)
+</script>
+{%- endblock %}

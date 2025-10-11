@@ -1,0 +1,146 @@
+{% extends "admin/layout.html" %}
+{% from "macros/forms.html" import csrf_input %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _title = (ctx.title if ctx is defined and ctx.title else ('관리자 로그인' if _lang=='ko' else 'Admin Login')) %}
+{% set _post = (ctx.post_url if ctx is defined and ctx.post_url else '/api/admin/auth/login') %}
+{% set _err = (ctx.error if ctx is defined and ctx.error else None) %}
+{% set _csrf = {'token': (ctx.csrf_token if ctx is defined and ctx.csrf_token else ''), 'cookie_name': 'csrf_token', 'header_name': 'X-CSRF-Token'} %}
+
+{% block head %}
+    <title>{{ _title }}</title>
+{% endblock %}
+
+{% block content %}
+<section aria-labelledby="loginTitle" class="login-section">
+    <h1 id="loginTitle" class="sr-only">{{ _title }}</h1>
+
+    {% if _err %}
+        <div class="alert error" role="alert" aria-live="assertive">
+            <strong>{{ '로그인 실패' if _lang=='ko' else 'Login failed' }}</strong>
+            <div>{{ _err.message }}</div>
+        </div>
+    {% endif %}
+
+    <form id="adminLoginForm" novalidate aria-describedby="loginHelp" data-post="{{ _post }}">
+        {{ csrf_input(_csrf) }}
+        <fieldset class="card">
+            <legend class="sr-only">{{ _title }}</legend>
+
+            <div class="field">
+                <label for="email">{{ '이메일' if _lang=='ko' else 'Email' }}</label>
+                <input id="email" name="email" type="email" required inputmode="email" autocomplete="username" />
+            </div>
+
+            <div class="field">
+                <label for="password">{{ '비밀번호' if _lang=='ko' else 'Password' }}</label>
+                <input id="password" name="password" type="password" required autocomplete="current-password" />
+            </div>
+
+            <p id="loginHelp" class="hint">
+                {{ '관리자 계정으로 로그인하세요.' if _lang=='ko' else 'Sign in with your admin account.' }}
+            </p>
+
+            <div class="actions">
+                <button id="submitBtn" class="btn" type="submit">
+                    {{ '로그인' if _lang=='ko' else 'Sign in' }}
+                </button>
+            </div>
+        </fieldset>
+    </form>
+</section>
+
+<style>
+    .login-section{max-width:420px;margin:48px auto}
+    .card{border:1px solid var(--border);border-radius:12px;padding:18px;background:var(--bg)}
+    .field{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+    .field input{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:transparent;color:var(--fg)}
+    .hint{color:var(--muted);font-size:.9rem;margin:10px 0}
+    .actions{margin-top:12px;display:flex;gap:8px;justify-content:flex-end}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+(function(){
+    const form = document.getElementById('admLoginForm');
+    const btn = document.getElementById('submitBtn');
+
+    function qs(name){
+        const m = document.querySelector(`meta[name="${name}"]`);
+        return m ? m.getAttribute('content') }} '' : '';
+    }
+    const CSRF_HEADER = qs('csrf-header') || 'X-CSRF-Token';
+    const CSRF_TOKEN = qs('csrf-token') || (document.querySelector('input[name="csrf_token"]')?.value || '');
+
+    function  setBusy(b){
+        if(!btn) return;
+        btn.disabled = b;
+        btn.setAttribute('aria-busy', String(b));
+    }
+
+    function  showError(msg){
+        const box = document.createElement('div');
+        box.className = 'alert error';
+        box.setAttribute('role','alert');
+        box.innerHTML = `<strong>{{ '로그인 실패' if _lang=='ko' else 'Login failed' }}</strong><div>${msg||''}</div>`;
+        form.parentNode.insertBefore(box,form);
+        try{box.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
+    }
+
+    form.addEventListner('submit', async function(ev){
+        ev.preventDefault();
+        setBusy(true);
+        const_email = (document.getElementById('email') as HTMLInputElement).value.trim();
+        const password = (document.getElementById('password') as HTMLInputElement).value;
+
+        if(!email || !password){
+            setBusy(false);
+            showError({{ "'이메일과 비밀번호를 입력하세요.'" if lang=='ko' else "'Enter email and password.'" }});
+            return;
+        }
+
+        const url = form.getAttribute('data-post') || '{{ _post }}';
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    [CSRF_HEADER]: CSRF_TOKEN
+                };
+                credentials: "same origin",
+                body: JSON.stringify({ email, password })
+            });
+            const data = await resp.json().catch(())=>({ ok:false, error:{ code: 'ERR_INTERNAL', message:'Bad response' }}));
+            if (data && data.ok){
+                window.location.href = '/admin';
+                return;
+            }
+            const msg = (data && data.error && data.error.message) ? data.error.message :
+                {{ "'인증에 실패했습니다.'" if _lang=='ko' else "Authentication failed.'" }};
+            showError(msg);
+        }catch(e){
+            showError({{ "네트워크 오류가 발생했습니다.'" if _lang=='ko' else "Network error occurred.'" }});
+        }finally{
+            setBusy(false);
+        }
+    });
+
+    // Enter key focus progression
+    ['email','password'].forEach((id, idx, arr)=>{
+        const el = document.getElementById(id) as HTMLInputElement;
+        if(!el) return;
+        el.addEventListner('keydown', (e)=>{
+            if(e.key==='Enter'){
+                e.preventDefault();
+                if(idx < arr.length-1){
+                    (document.getElementById(arr[idx+1])) as HTMLInputElement)?.focus();
+                }else{
+                    form.requestSubmit();
+                }
+            }
+        });
+    });
+})();
+</script>
+{% endblock %}

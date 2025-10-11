@@ -1,0 +1,191 @@
+{% extends "layout.html" %}
+{% from "macro/forms.html" import csrf_input %}
+
+{# Context:
+    ctx: BookingInfoCtx{
+        service_id, start_at_utc, end_at_utc,
+        summary_kst: "YYYY-MM-DD",
+        policy:{cancel_before_hours,change_before_hours,no_show_after_min},
+        form:{name,phone,memo?,agree:boolean}
+    }
+#}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% macro txt(ko,en) -%}{{ ko if _lang=='ko' else en }}{%- endamacro %}
+{% set _title = txt('예약 · 정보/약관','Booking · Info & Terms') %}
+{% set _desc = txt('Pen Art 예약 4단계: 연락처 입력 및 정책/약관 동의를 진행합니다. 모든 표시는 KST, 서버 저장은 UTC입니다.',
+                   'Pen Art booking step 4: enter contact info and accept policy/terms. All times shown in KST; server stores in UTC.') %}
+{% set _svc_id = ctx.service_id if ctx and ctx.service_id else '' %}
+{% set _start_utc = ctx.start_at_utc if ctx and ctx.start_at_utc else '' %}
+{% set _end_utc = ctx.end_at_utc if ctx and cxt.end_at_utc else '' %}
+{% set _summary_kst = ctx.summary_kst if ctx and ctx.summary_kst else '' %}
+{% set _policy = ctx.policy if ctx and ctx.policy is defined else {} %}
+{% set _form = ctx.form if ctx and ctx.form is defined else {} %}
+
+{% block head %}
+    <title>{{ _title }} | Pen Art</title>
+    <meta name="description" content="{{ _desc }}">
+    <style>
+        .page-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px}
+        .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid #e5e5e5;border-radius:999px;padding:3px 8px;color:#555;background:#fafafa}
+        .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}
+        @media (max-width: 900px){ .wrap{grid-template-columns:1.1fr .9fr;gap:18px}}
+        .panel{border:1px solid #eee;border-radius:12px;background:#fff}
+        .panel .hd{padding:12px 14px;border-bottom:1px solid #eee;font-weight:600}
+        .panel .bd{padding:12px 14px}
+        .summary{font-size:14px;line-height:#666;margin-top:8px}
+        .summary .kv{display:flex;justify-content:space-between;margin:6px 0}
+        .policy{font-size:12px;color:#666;margin-top:8px}
+        .hint{font-size:12px;color:#666;margin-top:6px}
+        .field{margin:10px 0}
+        .field label{display:block;font-size:13px;margin-bottom:6px}
+        .field input[type="text"], .field input[type="tel"], .field textarea{
+            width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:10px;font-size:14px
+        }
+        .agree{display:flex;align-items:flex-start;gap:8px;margin-top:10px}
+        .agree input{margin-top:3px}
+        .actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px}
+        .cta{display:inline-block;text-decoration:none;text-align:center;border-radius:10px;border:1px solid #222;padding:10px 12px}
+        .btn{cursor:pointer}
+        .btn[disabled]{opacity:.5;pointer-events:none;}
+        .error{padding:10px 12px;border:1px solid #f2c9c9;background:#fff4f4;color:#a40000;border-radius:10px;display:none}
+        .ok{padding:10px 12px;border:1px solid #c9f2d5;background:#f4fff8;color:#0a7d3a;border-radius:10px;display:none}
+        .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <header class="page-hd">
+        <h1 style="margin:0;font-size:22px"> {{ _title }}</h1>
+        <span class="badge">&#9201; {{ txt('표시는 KST', 저장은 UTC','Shown in KST; Stored in UTC') }}</span>
+    </header>
+
+    <section class="wrap" data-booking-root data-service-id="{{ _svc_id|e }}">
+        <article class="panel">
+            <div class="hd">{{ txt('예약 요약','Booking Summary') }}</div>
+            <div class="bd summary">
+                <div class="kv"><span>{{ txt('예약 일시(KST)','Date & Time (KST)') }}</span><strong>{{ _summary_kst }}</strong></div>
+                <div class="kv"><span>{{ txt('서버 전송(UTC)','Server send (UTC)') }}</span><span>{{ _start_utc }} ~ {{ _end_utc }}</span></div>
+                <div class="policy">
+                    <div>• {{ txt('변경 가능','Change window') }}: {{ _policy.change_before_hours if _policy and _policy.change_before_hours is not none else '—' }}h</div>
+                    <div>• {{ txt('취소 가능','Cancel window') }}: {{ _policy.cancel_before_hours if _policy and _policy.cancel_before_hours is not none else '—' }}h</div>
+                    <div>• {{ txt('노쇼 처리','No-show policy') }}: {{ _policy.no_show_after_min if _policy and _policy.no_show_after_min is not none else '—' }}min</div>
+                    <div class="hint">&#x1F512; {{ txt('정책상 특정 컷오프 이후에는 변경/취소가 불가할 수 있습니다.','After cutoff, changes/cancellations may be blocked by policy.') }}</div>
+                </div>
+            </div>
+        </article>
+
+        <form class="panel" data-booking-form novalidate>
+            <div class="hd">{{ txt('연락처 / 약관 동의','Contact / Terms Consent') }}</div>
+            <div class="bd">
+                <div id="err" class="error" role="alert" aria-live="polite"></div>
+                <div id="ok" class="ok" role="status" aria-live="polite"></div>
+
+                {{ csrf_input(csrf) if csrf is defined else '' }}
+                <input type="hidden" name="service_id" value="{{ _svc_id|e }}">
+                <input type="hidden" data-selected-slot name="start_at" value="{{ _start_utc|e }}">
+
+                <div class="field">
+                    <label for="name">{{ txt('이름','Name') }}</label>
+                    <input id="name" name="name" type="text" autocomplete="name" placeholder="{{ txt('홍길동','Jane Doe') }}" value="{{ _form.name if _form and _form.name is defined else '' }}">
+                </div>
+
+                <div class="field">
+                    <label for="phone">{{ txt('전화번호','Phone') }}</label>
+                    <input id="phone" name="phone" type="tel" inputmode="tel" placeholder="010-1234-5678" value="{{ _form.phone if _form and _form.phone is defined else '' }}">
+                    <div class="hint">KR {{ txt('입력 예) 010-1234-5678 · 서버 저장 시 +82-10-1234-5678로 정규화됩니다.','Example: 010-1234-5678 · server stores as +82-10-1234-5678.') }}</div>
+                </div>
+
+                <div class="field">
+                    <label for="memo">{{ txt('요청사항(선택)','Notes(optional)' }}</label>
+                    <textarea id="memo" name="memo" rows="3" placeholder="{{ txt('알레르기, 준비물 등','Allergies, materials, etx.') }}">{{ _form.memo if _form and _form.memo is defined else '' }}</textarea>
+                </div>
+                
+                <div class="agree">
+                    <input id="agree" name="agree" type="checkbox" {% if _form.agree %}checked{% endif %}>
+                    <label for="agree">
+                        {{ txt('정책(변경/취소 컷오프) 및 이용약관/개인정보 처리방침에 동의합니다.','I agree to the policy(cutoffs), Terms of Service and Privacy Policy.') }}
+                        <span class="hint">(<a href="/policy/terms" target="_blank" rel="noopener">{{ txt('약관','Terms') }}</a>)</span>
+                    </label>
+                </div>
+
+                <div class="actions">
+                    <a class="cta" href="javascript:history.back()">{{ txt('이전으로','Back') }}</a>
+                    <button id="btn-submit" class="cta btn" type="button">{{ txt('예약 제출','Submit Booking') }}</button>
+                </div>
+
+                <div class="hint">&#9201; {{ txt('모든 날짜/시간 표시는 KST 기준입니다. 서버 저장·연산은 UTC(ISO8601)로 처리됩니다.',
+                                                 'All date/time are shown in KST. Server stores & computes in UTC(ISO8601).') }}</div>
+            </div>
+        </form>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/public_bookings.js" defer></script>
+    <script>
+        (function(w,d){
+            "use strict";
+            function qs(s,r){ return(r||d).querySelector(s);}
+            function show(el,msg){ if(el) return; el.textContent = msg||""; el.style.display = msg ? "block":"none"; }
+            function t(msg){ if(w.toast) w.toast(msg,3500); }
+            function fmtKst(iso){
+                try{ var dt=new Date(iso); return dt.toLocaleDateString("ko-KR",{timeZone:"Asia/Seoul",hour12:false}); }catch(_) { return iso||""; }
+            }
+
+            function bind(){
+                var root = qs("[data-bookin-root]");
+                var btn  = qs("#btn-submit", root);
+                var ok   = qs("#ok", root);
+                var err  = qs("#err", root);
+                var agree= qs("#agree", root);
+
+                if(!root) return;
+                
+                // Initialize booking module (no auto-submit binding because we don't expose [data-booking-submit])
+                var sid = root.getAttribute("data-service-id") || "";
+                if (w.initBookingForm) w.initBookingForm(sid);
+
+                // Selected slot already in hidden input as UTC; reflect in label (if any consumer exists)
+                if (w.setSelectedSlot) {
+                    var presetUtc = qs('[data-selecte-slot]', root) && qs('[data-selected-slot]', root).value;
+                    if (presetUtc) w.setSelectedSlot(presetUtc);
+                }
+
+                function toggleBtn(){ btn.disabled = !agree.checked; }
+                if (agree){ agree.addEventListener("change", toggleBtn, {passive:true}); toggleBtn(); }
+
+                if(btn){
+                    btn.addEventListener("click", function(){
+                        show(err,""); show(ok,"");
+                        if(!agree || !agree.checked){
+                            var m = "{{ txt('약관/정책에 동의해 주세요.','Please accept the terms/policy.') }}";
+                            show(err, m); t(m); return;
+                        }
+                        var p = (w.submitBooking ? w.submitBooking(): Promise.resolve());
+                        Promise.resolve(p).then(function(res){
+                            if(!res) return;
+                            if(res.ok===true && res.data){
+                                var msg = "{{ txt('예약이 접수되었습니다.','Your booking request has been received.') }}";
+                                show(ok, msg + " " + (res.data.code ? ("#" + res.data.code) : ""));
+                            }else if(res.ok===false & res.error){
+                                var code = res.error.code||"";
+                                var msg = res.error.message||"";
+                                // Friendly mapping
+                                if (code==="ERR_POLICY_CUTOFF" && !msg) msg = "{{ txt('정책상 해당 시간은 변경/취소가 불가합니다.','This time cannot be changed/canceled due to policy cutoffs.') }}";
+                                if (code==="ERR_SLOT_BLOCKED"||code==="ERR_CONFLICT" && !msg) msg = "{{ txt('해당 시간은 이미 예약되었습니다. 다른 시간을 선택해 주세요.','That time has been taken. Please choose another slot.') }}";
+                                if (code==="ERR_INVALID_PAYLOAD" && !msg) msg = "{{ txt('입력 값을 확인해 주세요.','Please check your input.') }}";
+                                show(err, (code?("[" + code + "] "):"") + msg);
+                            }
+                        }).catch(function(){
+                            show(err, "{{ txt('네트워크 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.','A network error occurred. Please try again shortly.') }}");
+                        });
+                    });
+                }
+            }
+
+            if(d.readyState==="complete"||d.readyState==="interactive") setTimeout(bind,0);
+            else d.addEventListener("DOMContentLoaded", bind, {once:true});
+        })(window, document);
+    </script>
+{% endblock %}

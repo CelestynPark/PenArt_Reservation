@@ -1,0 +1,100 @@
+{% extends "layout.html" %}
+
+{% from "public/lang_switcher.html" import lang_switcher as _lang_switcher}
+
+{% set _lang = lang or (i18n.lang if i18n is defined and i18n.lang else 'ko') %}
+{% macro _t(map) -%}{{ (map.get(_lang) or map.get('ko') or '') }}{%- endmacro %}
+
+{% block head %}
+    <title>{{ _t(policy.title_i18n) if policy is defined else '이용약관' }}</title>
+    <meta name="robots" content="noindex,follow">
+    <style>
+        .terms-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px}
+        .terms-meta{color:#666;font-size:.92rem}
+        .terms-toc{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:12px 14px;margin:16px 0}
+        .terms-toc h2{margin:0 0 8px 0;font-size:1rem}
+        .terms-toc ol{margin:0;padding-left:18px}
+        .terms-toc a{text-decoration:none;color:#0b61a4}
+        .terms-section{padding:8px 0 18px;border-bottom:1px solid #f0f0f0}
+        .terms-section:last-of-type{border-bottom:0}
+        .anchor-link{color:#999;font-size:.9rem;margin-left:6px;text-decoration:none}
+    </style>
+{% endblock %}
+
+{% block content %}
+    {% set policy = policy or ctx or {} %}
+    <header class="terms-header">
+        <h1 style="margin:0">{{ _t(policy.title_i18n) or ('이용약관' if _lang=='ko' else 'Terms of Service') }}</h1>
+        <div class="terms-meta">
+            <span>{{ '버전' if _lang=='ko' else 'Version' }}: <strong>{{ policy.version or 'v1.0' }}</strong></span>
+            <span style="margin:0 8px">·</span>
+            <span>{{ '개정일' if _lang=='ko' else 'Last Updated' }}: <time datetime="{{ policy.updated_at|e }}">{{ policy.updated_at or '' }}</time></span>
+        </div>
+    </header>
+
+    <div aria-label="{{ '언어' if _lang=='ko' else 'Language' }}" style="margin:6px 0 18px 0">
+        {{ _lang_switcher(_lang, [
+            {'lang':'ko','href':'/ko/policy/terms','hreflang':'ko'},
+            {'lang':'en','href':'/en/policy/terms','hreflang':'en'}
+        ]) }}
+    </div>
+
+    {% if policy.toc and policy.sections %}
+    <nav class="terms-toc" aria-label="{{ '목차' if _lang=='ko' else 'Table of contents' }}">
+        <h2>{{ '목차' if _lang=='ko' else 'Table of Contents' }}</h2>
+        <ol>
+            {% for sec in policy.sections if sec and sec.id %}
+                <li>
+                    <a href="#{{ sec.id|e }}">{{ _t(sec.title_i18n) }}</a>
+                </li>
+            {% endfor %}
+        </ol>
+    </nav>
+    {% endif %}
+
+    <article>
+        {% for sec in policy.sections or [] %}
+            <section id="{{ sec.id|e }}" class="terms-section" aria-labelledby="{{ sec.id|e }}-title">
+                <h2 id="{{ sec.id|e }}-title" style="margin:0 0 8px 0">
+                    {{ _t(sec.title_i18n) }}
+                    <a class="anchor-link" href="#{{ sec.id|e }}" aria-label="{{ '이 섹션으로 링크' if _lang=='ko' else 'Link to this section' }}">#</a>
+                </h2>
+                <div class="terms-content">
+                    {{ (sec.content_html or '')|safe }}
+                </div>
+            </section>
+        {% endfor %}
+    </article>
+
+    <section style="margin-top:24px;color:#666;font-size:.92rem">
+        <h3 style="margin:0 0 6px 0">{{ '문의' if _lang=='ko' else 'Contact' }}</h3>
+        <p style="margin:0">
+            {{ '약관 관련 문의는 아래로 연락해 주세요.' if _lang=='ko' else 'For questions regarding these terms, contact us:' }}
+            <a href="mailto:legal@penart.example">legal@penart.example</a>
+        </p>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+    "use strict";
+    try{
+        var toc=document.querySelector('.terms-toc');
+        if(toc){
+            toc.addEventListener('click', function(e){
+                var a=e.target.closest('a[href^="#"]');
+                if(!a) return;
+                var id=a.getAttribute('href').slice(1);
+                var el=document.getElementById(id);
+                if (el && 'scrollIntoView' in el){
+                    e.preventDefault();
+                    el.scrollIntoView({behavior:'smooth', block:'start'});
+                    history.replaceState(null, '', '#' + id);
+                }
+            }, {passive:false});
+        }
+    }catch(_){}
+})();
+</script>
+{% endblock %}
