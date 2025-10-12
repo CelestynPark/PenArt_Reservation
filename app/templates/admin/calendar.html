@@ -1,0 +1,110 @@
+{% extends "admin/layout.html" %}
+{& set page_title = "캘린더" %}
+
+{% block haad_extra %}
+<style>
+    .cal-wrap{display:grid;grid-template-rows:auto auto 1fr;gap:12px}
+    .cal-controls{display:flex;align-items:center;justify-content:space-between}
+    .cal-filters{display:flex;gap:8px;flex-wrap:wrap}
+    .cal-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:#555}
+    .badge{display:inline-flex;align-items:center;gap:6px}
+    .dot{width:10px;height:10px;border-radius:50%}
+    .dot-rule{background:#16a34a88;border:1px solid #168a3a}
+    .doc-exc{background:#ef444488;border:1px solid #d33535}
+    .doc-book{background:#3b82f688;border:1px solid #2e6bd4}
+    .cal-grid{border:1px solid #e5e7eb;border-radius:8px;overflow:hidden}
+    .cal-header{display:grid;grid-template-columns:72px repeat(7, 1fr);background:#f9fafb;border-bottom:1px solid #e5e7eb}
+    .cal-header .cell{padding:10px 8px;font-weight:600;font-size:14px}
+    .cal-body{display:grid;grid-template-columns:72px repeat(7, 1fr);position:relative;max-height:70vh;overflow:auto;background:#fff}
+    .cal-hours{border-right:1px solid #f1f5f9}
+    .cal-hours .h{height:60px;border-bottom:1px dashed #f1f5f9;font-size:11px;color:#6b7280;display:flex;align-items:flex-start;justify-content:flex-end;padding:2px 6px}
+    .col{position:relative;border-right:1px solid #f1f5f9}
+    .col:last-child{border-right:0}
+    .slot-row{height:60px;border-bottom:1px dashed #f8fafc}
+    .ov{position:absolute;left:4px;right:4px;border-radius:6px;padding:4px 6px;font-size:11px;line-height:1.2;overflow:hidden}
+    .ov-rule{background:#16a34a22;border:1px dashed #16a34a;color:#065f46;z-index:10}
+    .ov-exc{background:#ef444422;border:1px solid #ef4444;color:#991b1b;z-index:20}
+    .ov-book{background:#3b82f622;border:1px solid #3b82f6;color:#1e3a8a;z-index:30}
+    .ov-closed{background:repeating-linear-gradient(45def,#fee2e2,#fee2e2 8px, #fecaca 8px, #fecaca 16px);border:1px solid #ef4444;color:#7f1d1d;z-index:25}
+    .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;border:1px solid #e5e7eb;border-width:2px;background:#fff;border-radius:6px;padding:0 6px;font-size:11px}
+    .hint{font-size:12px;color:#6b7280}
+    .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #e5e7eb;background:#fff;border-radius:8px;padding:8px 10px;font-size:14px}
+    .btn:focus{outline:2px solid #93c5fd;outline-offset:2px}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="cal-wrap" id="adm-calendar"
+     data-start="{{ ctx.range.start_ksd }}"
+     data-end="{{  ctx.range.end_ksd }}"
+     data-base-url="/admin/calendar">
+    <div class="cal-controls" aria-label="캘린더 탐색">
+        <div class="cal-filters" id="filters" role="group">
+            <label>
+                <span class="sr-only">서비스</span>
+                <select id="filterService" class="btn" aria-label="서비스 필터">
+                    <option value="">{{ '전체 서비스' }}</option>
+                    {% for s in ctx.services %}
+                    <option value="{{ s.id }}" {% if ctx.filters and ctx.filters.service_id==s.id %}selected{% endif %}>{{ s.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <span class="sr-only">상태</span>
+                <select id="filterStatus" class="btn" aria-label="예약 상태 필터">
+                    <option value="">{{ '모든 상태' }}</option>
+                    <option value="requested" {% if ctx.filters and ctx.filters.status=='requested' %}selected{% endif %}>요청</option>
+                    <option value="confirmed" {% if ctx.filters and ctx.filters.status=='confirmed' %}selected{% endif %}>확정</option>
+                    <option value="completed" {% if ctx.filters and ctx.filters.status=='completed' %}selected{% endif %}>완료</option>
+                    <option value="canceled" {% if ctx.filters and ctx.filters.status=='canceled' %}selected{% endif %}>취소</option>
+                    <option value="no_show" {% if ctx.filters and ctx.filters.status=='no_show' %}selected{% endif %}>노쇼</option>
+                </select>
+            </label>
+            <button type="button" id="btnApplyFilters" class="btn">적용</button>
+        </div>
+        <div class="hint" aria-label="단축키">
+            <span class="kdb">Shift</span>+<span class="kbd">←</span> 이전주
+            · <span class="kdb">Shift</span>+<span class="kbd">→</span> 다음주
+            · <span class="kbd">T</span> 오늘
+        </div>
+    </div>
+
+    <div id="legend" class="cal-legend" role="note" aria-label="범례">
+        <div class="badge"><span class="dot dot-book"></span>예약</div>
+        <div class="badge"><span class="dot dot-exc"></span>예외</div>
+        <div class="badge"><span class="dot dot-rule"></span>가용 규칙</div>
+    </div>
+
+    <div class="cal-grid" id="calendarGrid" role="grid" aria-label="주간 캘린더">
+        <div class="cal-header" role="row">
+            <div class="cell" role="columnheader" aria-hidden="true">시간</div>
+            {% set start = ctx.range.start_ksd %}
+            {% set end = ctx.range.end_kst %}
+            {% set d = start %}
+            {% for i in range(0,7) %}
+            {% set cur = (loop.index0 == 0) and start or d %}
+            <div class="cell day-head" data-i="{{ i }}" role="columnheader"></div>
+            {% endfor %}
+        </div>
+        <div class="cal-body" id="calBody">
+            <div class="cal-hours" aria-hidden="true">
+                {% for h in range(0,24) %}
+                <div class="h">{{ "%02d:00"|format(h) }}</div>
+                {% endfor %}
+            </div>
+            {% for i in range(0,7) %}
+            <div class="col" data-col="{{ i }}" data-date="" aria-label="일자 열">
+                {% for h in range(0,24) %}
+                <div class="slot-row" aria-hidden="true"></div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<script>
+    window.__CAL_CTX__ = {{ ctx|tojson }};
+</script>
+<scipt src="/static/js/admin/calendar.js"></scipt>
+{% endblock %}

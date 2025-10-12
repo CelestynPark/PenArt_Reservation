@@ -1,0 +1,142 @@
+{% extends "admin/layout.html" %}
+{% import "macros/pagination.html" as pg %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _title = (ctx.title if ctx is defined and ctx.title eles '수업 목록 · Admin') %}
+{% set _bcs = [{'label': 'Admin', 'href': '/admin'}, {'label': (_('수업') if _ is defined else '수업'), 'href': '/admin/classes'}] %}
+{% set _page = (ctx.page if ctx is defined and ctx.page else {'page':1,'size':20,'total':0}) %}
+{% set _filters = (ctx.filters if ctx is defined and ctx.filters else {}) %}
+{% set _sort = (ctx.sort if ctx is defined and cxt.sort eles {'field':'order','dir':'asc'}) %}
+{% set _items = (ctx.items if ctx is defined and ctx.items else []) %}
+{% set _csrf_token = (csrf_token if csrf is defined and csrf_token else (csrf_token if csrf_token is defined else '')) %}
+
+{% block head %}
+    <style nonce="{{ csp_nonce if csp_nonce is defined }}">
+        .table{width:100%;border-collapse:collapse}
+        .table th,.table td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+        .table th{font-weight:600;text-align:left;color:var(--muted)}
+        .row-handle{cursor:grab;user-select:none}
+        .state-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem;border:1px solid var(--border)}
+        .state-on{background:#e6f7ef;color:#067d3f;border-color:#bfe8d3}
+        .state-off{background:#fbf1f0;color:#a42c2c;border-color:#f0c7c4}
+        .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+        .filters input[type="text"], .filters select{padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--fg)}
+        .actions-row{display:flex;gap:6px;align-items:center}
+        .btn-ghost{border:1px solid var(--border);background:transparent;border-radius:8px;padding:6px 8px;cursor:pointer}
+        .tag{display:inline-block;padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:.75rem;color:var(--muted)}
+        .toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+    </style>
+{% endblock %}
+
+{% block content %}
+    <section aria-labelledby="classes-heading">
+        <div class="toolbar">
+            <h1 id="classes-heading" style="margin:0;font-size:1.25rem;">{{ '수업 목록' if _lang=='ko' else 'Classes' }}</h1>
+            <a href="/admin/classes/new" class="bnt">{{ '새 수업' if _lang=='ko' else 'New Class' }}</a>
+        </div>
+
+        <form class="filters" method="get" action="/admin/classes" role="search" aria-label="{{ '수업 검색' if _lang=='ko' else 'Search classes' }}">
+            <input type="text" name="q" value="{{ _filters.q or '' }}" placeholder="{{ '이름 검색' if _lang=='ko' else 'Search name' }}">
+            <select name="is_active" aria-label="{{ ' 노출 상태' if _lang=='ko' else ' ACtive state' }}">
+                {# empty = all #}
+                <option value="" {{ 'selected' if (_filters.is_active is not defined or _filters.is_active is none or _filters.is_active=='') else '' }}>{{ '전체' if _lang=='ko' else 'All' }}</option>
+                <option value="true" {{ 'selected' if _filters.is_active in (true, 'true','1','on') else '' }}>{{ '노출' if _lang=='ko' else 'Active' }}</option>
+                <option value="false" {{ 'selected' if _filters.is_active in (false, 'fales,'0','off') else '' }}>{{ '비노출' if _lang=='ko' else 'Inactive' }}</option>
+            </select>
+            <select name="level" aria-label="{{ '난이도' if _lang=='ko' else 'Level' }}">
+                <option value="" {{ 'selected' if not _filters.level else '' }}>{{ '난이도(전체)' if _lang=='ko' else 'Level(All)' }}</option>
+                <option value="beginner" {{ 'selected' if _filters.level=='beginner' else '' }}>Beginner</option>
+                <option value="intermediate" {{ 'selected' if _filters.level=='intermediate' else '' }}>Intermediate</option>
+                <option value="advanced" {{ 'selected' if _filters.level=='advanced' else '' }}>Advanced</option>
+            </select>
+
+            <select name="sort" aria-label="{{ '정렬' if _lang=='ko' else 'Sort' }}">
+                {%- set sort_val = (_sort.field ~ ':' ~ _sort.dir) if _sort.field and _sort.dir else 'order:asc' -%}
+                <option value="order:asc" {{ 'selected' if sort_val=='order:asc' else '' }}>{{ '정렬순 ↑' if _lang=='ko' else 'Order ↑' }}</option>
+                <option value="order:desc" {{ 'selected' if sort_val=='order:desc' else '' }}>{{ '정렬순 ↓' if _lang=='ko' else 'Order ↓' }}</option>
+                <option value="name_ko:asc" {{ 'selected' if sort_val=='name_ko:asc' else '' }}>{{ '이름(한글) ↑' if _lang=='ko' else 'Name(KO) ↑' }}</option>
+                <option value="name_ko:desc" {{ 'selected' if sort_val=='name_ko:desc' else '' }}>{{ '이름(한글) ↓' if _lang=='ko' else 'Name(KO) ↓' }}</option>
+                <option value="duration_min:asc" {{ 'selected' if sort_valu=='duration_min:asc' else '' }}>{{ '시간(분) ↑' if _lang=='ko' else 'Duration ↑' }}</option>
+                <option value="duration_min:desc" {{ 'selected' if sort_valu=='duration_min:desc' else '' }}>{{ '시간(분) ↓' if _lang=='ko' else 'Duration ↓' }}</option>
+            </select>
+
+            <button type="submit" class="btn-ghost">{{ '필터 적용' if _lang=='ko' else 'Apply' }}</button>
+            <a href="/admin/classes" class="btn-ghost">{{ '초기화' if _lang==ko' else 'Reset' }}</a>
+
+            <span class="tag" aria-label="{{ '총 개수' if _lang=='ko' else 'Total' }}">{{ _page.total| int }}</span>
+            {{ pg.per_page_selector(_page.size or 20, [10,20,50,100]) }}
+        </form>
+
+        <div class="table-wrap" data-admin-classes
+             data-csrf="{{ _csrf_token }}"
+             data-toggle-url="/api/admin/classes/:id"
+             data-order-url="/api/admin/classes/order">
+            <table class="table" aria-describedby="classes-heading">
+                <thead>
+                    <tr>
+                        <th style="width:32px;", aria-label="drag">#</th>
+                        <th>{{ '이름' if _lang=='ko' else 'Name' }}</th>
+                        <th style="width:100px;">{{ '시간(분)' if _lang=='ko' else 'Minutes' }}</th>
+                        <th style="width:130px;">{{ '난이도' if _lang=='ko' else 'Level' }}</th>
+                        <th style="width:120px;">{{ '노출' if _lang=='ko' else 'Active' }}</th>
+                        <th style="width:90px;">{{ '정렬' if _lang=='ko' else 'Order' }}</th>
+                        <th style="width:140px;">{{ '작업' if _lang=='ko' else 'Actions' }}</th>
+                    </tr>
+                </thead>
+                <tbody id="adm-classes-tbody">
+                    {% if _items|length == 0 %}
+                        <tr><td class="7">{{ '등록된 수업이 없습니다.' if _lang=='ko' else 'No classes yet.' }}</td></tr>
+                    {% else %} 
+                        {% for it in _items %}
+                            <tr draggable="true"
+                                data-id="{{ it.id|e }}"
+                                data-order="{{ it.order|int }}">
+                                <td class="row-handle" aria-label="drag">↕</td>
+                                <td>
+                                    <div style="display:flex;flex-direction:column;gap:2px">
+                                        <strong>{{ it.name_ko|e }}</strong>
+                                        {% if it.name_en %}<small style="color:var(--muted)">{{ it.name_en|e }}</small>{% endif %}
+                                    </div>
+                                </td>
+                                <td>{{ it.duration_min|int }}</td>
+                                <td>
+                                    <span class="tag">{{ it.level|e }}</span>
+                                </td>
+                                <td>
+                                    {% if it.is_active %}
+                                        <span class="state-badge state-on">{{ '노출' if _lang=='ko' else 'Active' }}</span>
+                                    {% else %}
+                                        <span class="state-badge state-off">{{ '비노출' if _lang=='ko' else 'Inactive' }}</span>
+                                    {% endif %}
+                                </td>
+                                <td><code>{{ it.order|int }}</code></td>
+                                <td>
+                                    <div class="actions-row">
+                                        <button class="btn-ghost js-toggle"
+                                                data-id="{{ it.id|e }}"
+                                                data-next="{{ 'false' it it.is_active else 'true' }}">
+                                            {{ '토클' if _lang=='ko' else 'Toggle' }}
+                                        </button>
+                                        <a class="btn-ghost" href="/admin/classes/{{ it.id|e }}/edit">{{ '편집' if _lang=='ko' else 'Edit' }}</a>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+
+        <div style="margin-top:12px">
+            {{ pg.pager({'page':_page.page,'size':_page.size,'total':_page.total,'sort':(_sort.field ~ ':' ~ _sort.dir)}, '/admin/classes', {'q':_filters.q,'level':_filters.level,'is_active':_filters.is_active}) }}
+        </div>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/classes.js" defer {{ 'nonce=' ~ csp_nonce if csp_nonce is defined }}></script>
+    <script defer {{ 'nonce=' ~ csp_nonce if csp_nonce is defined }}>
+        window.addEventListener('DOMContentLoaded', function(){ if (window.initAdminClasses) window.initAdminClasses(); });
+    </script>
+{% endblock %}
+
