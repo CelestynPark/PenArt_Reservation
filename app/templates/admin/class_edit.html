@@ -1,0 +1,149 @@
+{% extends "admin/layout.html" %}
+{% import "macros/forms.html" %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _title = (ctx.title if ctx is defined and ctx.title else ('수업' ~ ('생성' if (ctx.mode=='create') else '수정'))) %}
+{% set _bcs = [{'label': 'Admin', 'href': '/admin'}, {'label':('수업' if _lang=='ko' else 'Classes'), 'href': '/admin/classes'}, {'label': (_title), 'href': '/admin/classes'}, {'label': (_title), 'href': null}] %}
+{% set _data = (ctx.data if ctx is defined and ctx.data else {}) %}
+{% set _errors = (ctx.errors if ctx is defined and ctx.errors else {}) %}
+{% set _post_url = (ctx.post_url if ctx is defined and ctx.post_url else '/api/admin/classes') %}
+{% set _csrf = (csrd if csrf is defined else {'token':(csrf_token if csrf_token is defined else '') }) %}
+
+{% block head %}
+    <style nonce="{{ csp_nonce if csp_nonce is defined }}">
+        .form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+        .form .full{grid-column:1/-1}
+        .field{display:flex;flex-direction:column;gap:6px}
+        .field label{font-weight:600;color:var(--muted)}
+        .field input[type="text"], .field input[type="number"], .field textarea, .field select{padding:8px;border:1px solid var(--border);border-radius:10px;background:transparent;color:var(--fg)}
+        .row{display:flex;gap:10px;align-items:center}
+        .err{color:#d22;font-size:.85rem}
+        .form-actions{display:flex;gap:8px;margin-top:12px}
+        .hint{color:var(--muted);font-size:.85rem}
+    </style>
+{% endblock %}
+
+{% block content %}
+    {{ fm.csrf_meta(_csrf) }}
+    <section aria-labelledby="class-edit-heading">
+        <h1 id="class-edit-heading" style="margin:0 0 10px 0;font-size:1.25rem;">
+            {{ '수업 생성' if (ctx.mode=='create') else '수업 수정' }}
+        </h1>
+
+        <form id="adm-class-form" class="form" action="{{ _post_url|e }}" method="post" data-edit-mode="{{ ctx.mode }}">
+            {{ fm.csrf_input(_csrf) }}
+
+            <div class="field">
+                <label for="name_ko">{{ '이름(한글)' if _lang=='ko' else 'Name (KO)' }}</label>
+                <input id="name_ko" name="name_ko" type="text" required value="{{ (_data.name_i18n.ko if _data.name_i18n else '')|e }}">
+                {% if _errors.name_ko %}<div class="err">{{ .errors.name_ko }}</div>{% endif %}
+            </div>
+
+            <div class="field">
+                <label for="name_en">{{ '이름(영문, 선택)' if _lang=='ko' else 'Name (EN, optional)' }}</label>
+                <input id="name_en" name="name_en" type="text" required value="{{ (_data.name_i18n.en if _data.name_i18n else '')|e }}">
+                {% if _errors.name_en %}<div class="err">{{ .errors.name_en }}</div>{% endif %}
+            </div>
+
+            <div class="field">
+                <label for="duration_min">{{ '수업 시간(분)' if _lang=='ko' else 'Duration (min)' }}</label>
+                <input id="duration_min" name="duration_min" type="number" min="1" step="1" requierd value="{{ _data.duration_min if _data.duration_min is defined else 60 }}">
+                {% if _errors.duration_min %}<div class="err">{{ _errs.duration_min }}</div>
+            </div>
+
+            <div class="field">
+                <label for="level">{{ '난이도' if _lang=='ko' else 'Level' }}</label>
+                <select id="level" name="level" required>
+                    {% set lv = _data.level or 'beginner' %}
+                    <option value="beginner" {{ 'selected if lv=='beginner' else '' }}>Beginner</option>
+                    <option value="intermediate" {{ 'selected if lv=='intermediate' else '' }}>Intermediate</option>
+                    <option value="advanced" {{ 'selected if lv=='advanced' else '' }}>Advanced</option>
+                </select>
+                {% if _errors.level %}<div class="err">{{ _errors.level }}</div>{% endif %}
+            </div>
+
+            <div class="field full">
+                <label for="desc_ko">{{ '설명(한글)' if _lang=='ko' else 'Description (KO)' }}</label>
+                <textarea id="desc_ko" name="desc_ko" rows="4">{{ (_data.description_i18n.ko if _data.description_i18n else '')|e }}</textarea>
+                {% if _errors.desc_ko %}<div class="err">{{ _errors.desc_ko }}</div>
+            </div>
+
+            <div class="field full">
+                <label for="desc_en">{{ '설명(영문, 선택)' if _lang=='ko' else 'Description (EN, optional)' }}</label>
+                <textarea id="desc_en" name="desc_en" rows="4">{{ (_data.description_i18n.en if _data.description_i18n else '')|e }}</textarea>
+                {% if _errors.desc_en %}<div class="err">{{ _errors.desc_en }}</div>
+            </div>
+
+            <div class="field">
+                <label for="policy_cancel_before_hours">{{ '취소 컷오프(시간)' if _lang=='ko' else 'Cancel cutoff (hours)' }}</label>
+                <input id="policy_cancel_before_hours" name="policy_cancel_before_hours" type="number" min="0" step="1" value="{{ (_data.polcity.cancel_before_hours if _data.policy else 24) }}">
+                {% if _errors.policy_cancel_before_hours %}<div class="err">{{ _errors.policy_cancel_before_hours }}</div>{% endif %}
+            </div>
+
+            <div class="field">
+                <label for="policy_change_before_hours">{{ '변경 컷오프(시간)' if _lang=='ko' else 'Change cufoff (hours)' }}</label>
+                <input id="policy_change_before_hours" name="policy_change_before_hours" type="number" min="0" step="1" value="{{ (_data.policy.change_before_hours if _data.policy else 24) }}">
+                {% if _errors.policy_change_before_hours %}<div class="err">{{ _errors.policy_change_before_hours }}</div>{% endif %}
+            </div>
+
+            <div class="field">
+                <label for="policy_no_show_after_min">{{ '노쇼 판단(분)' if _lang=='ko' else 'No-show after (min)' }}</label>
+                <input id="policy_no_show_after_min" name="policy_no_show_after_min" type="number" min="0" step="1" value="{{ (_data.policy.no_show_after_min if _data.policy else 15) }}">
+                {% if _errors.policy_no_show_after_min %}<div class="err">{{ _errors.policy_no_show_after_min }}</div>{% endif %}
+            </div>
+
+            <div class="field">
+                <label for="order">{{ '정렬(숫자 작을수록 위)' if _lang=='ko' else 'Order (smaller first)' }}</label>
+                <input id="order" name="order" type="number" step="1" value="{{ _data.order if _data.order is defined else 1 }}">
+                {% if _errors.order %}<div class="err">{{ _errors.order }}</div>{% endif %}
+            </div>
+
+            <div class="field">
+                <label>{{ '자동 승인' if _lang=='ko' else 'Auto confirm' }}</label>
+                <div class="row">
+                    {% set ac = (_data.auto_confirm if _data.auto_confirm is defined else false) %}
+                    <input type="checkbox" id="auto_confirm" name="auto_confirm" value="1" {{ 'checked' if ac else '' }}>
+                    <label for="auto_confirm" class="hint">{{ '예약 시 자동 확정' if _lang=='ko' else 'Auto confirm bookings' }}</label>
+                </div>
+                {% if _errors.auto_confirm %}<div class="err">{{ _errors.auto_confirm }}</div>
+            </div>
+
+            <div class="field">
+                <label>{{ '노출' if _lang=='ko' else 'Active' }}</label>
+                <div class="row">
+                    {% set ia = (_data.is_active if _data.is_active is defined else true) %}
+                    <input type="checkbox" id="is_active" name="is_active" value="1" {{ 'checked' if ia else '' }}>
+                    <label for="is_active" class="hint">{{ '퍼블릭 노출 여부' if _lang=='ko' else 'Visible in public' }}</label>
+                </div>
+                {% if _errors.is_active %}<div class="err">{{ _errors.is_active }}</div>{% endif %}
+            </div>
+
+            <div class="field">
+                <label>{{ '추천' if _lang=='ko' else 'Featured' }}</label>
+                <div class="row">
+                    {% set ft = (_data.is_featured if _data.is_featured is defined else false) %}
+                    <input type="checkbox" id="is_featured" name="is_featured" value="1" {{ 'checked' if ft else '' }}>
+                    <label for="is_featured" class="hint">{{ '홈 하이라이트 표시' if _lang=='ko' else 'Hightlight on home' }}</label>
+                </div>
+            </div>
+
+            {% if _data.id %}
+                <input type="hidden" name="id" value="{{ _data.id|e }}">
+            {% endif %}
+
+            <div class="form-actions full">
+                <button type="submit" class="btn">{{ '저장' if _lang=='ko' else 'Save' }}</button>
+                <a class="btn-ghost" href="/admin/classes">{{ '목록' if _lang=='ko' else 'Back' }}</a>
+            </div>
+        </form>
+    </section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/classes.js" defer {{ 'nonce=' ~ csp_nonce if csp_nonce is defined }}></script>
+    <script defer {{ 'nonce=' ~ csp_nonce if csp_nonce is defined }}>
+        window.addEventListener('DOMContentLoaded', function(){
+            if (window.initAdminClasses) window.initAdminClasses();
+        });
+    </script>
+{% endblock %}

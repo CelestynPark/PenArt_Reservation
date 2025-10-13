@@ -1,0 +1,130 @@
+{% extends "admin/layout.html" %}
+{% set _lang = (lang or (i118n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set ctx = ctx or {} %}
+{% set data = ctx.data or {} %}
+{% set errors = ctx.errors or {} %}
+{% set mode = ctx.mode or ('edit' if data and data.id else 'create') %}
+{% set post_url = ctx.post_url or '/api/admin/gallery' %}
+{% set upload_url = ctx.upload_url or '/api/uploads/reviews' %}
+{% set active_id = 'gallery' %}
+
+{% block head %}
+<style>
+    .form{display:grid;grid-template-columns:1fr 320px;gap:16px}
+    .card{border:1px solid var(--border);border-radius:12px;padding:14px;background:var(--bg)}
+    .row{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+    .row.inline{flex-direction:row;gap:12px;align-items:center}
+    .error{color:#b42318;font-size:.875rem}
+    .img-grid{display:grid;grid-template-columns:repeat(auto-fil,minmax(120px,1fr));gap:10px}
+    .img-tile{position:relative;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#f7f7f7}
+    .img-tile img{display:block;width:100%;height:120px;object-fit:cover}
+    .img-title button{position:absolute;top:6px;right:6px}
+    .chips{display:flex;gap:6px;flex-wrap:wrap}
+    .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border);border-radius:999px}
+    .chip .x{border:none;background:transparent;cursor:pointer}
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 style="margin:0 0 12px;">
+    {{ ('작품 등록' if mode=='create' else '작품 편집') if _lang=='ko' else ('Create Work' if mode=='create' else 'Edit Work') }}
+</h1>
+
+<form id="galleryForm" class="form card" novalidate
+      data-post-url="{{ post_url|e }}"
+      data-upload-url="{{ upload_url|e }}"
+      data-mode="{{ mode|e }}">
+    <input type="hidden" name="id" value="{{ data.id or '' }}">
+    <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token or csrf_token or '' }}">
+    
+    <section class="card">
+        <div class="row">
+            <label for="author_type">{{ '작성자 유형' if _lang=='ko' else 'Author type' }}</label>
+            <select id="author_type" name="author_type" required>
+                <option value="artist" {{ 'selected' if (data.author_type or 'artist')=='artist' else '' }}>{{ '작가' if _lang=='ko' else 'Artist' }}</option>
+                <option value="student" {{ 'selected' if data.author_type=='student' else '' }}>{{ '학생' if _lang=='ko' else 'Student' }}</option>
+            </select>
+            {% if error.author_type %}<div class="error">{{ errors.author_type }}</div>{% endif %}
+        </div>
+
+        <div class="row">
+            <label for="title_ko">{{ '제목(한국어, 필수)' if _lang=='ko' else 'Title (Korean, required)' }}</label>
+            <input id="title_ko" name="title_ko" value="{{ (data.title_i18n.ko if data.title_i18n else '')|e }}" required>
+            {% if errors['title_i18n.ko'] %}<div class="error">{{ errors['title_i18n.ko'] }}</div>{% endif %}
+        </div>
+
+        <div class="row">
+            <label for="title_en">{{ '제목(영어)' if _lang=='ko' else 'Title (English)' }}</label>
+            <input id="title_en" name="title_en" value="{{ (data.title_i18n.en if data.title_i18n else '')|e }}">
+        </div>
+
+        <div class="row">
+            <label for="desc_ko">{{ '설명(한국어)' if _lang=='ko' else 'Description (Korean)' }}</label>
+            <textarea id="desc_ko" name="desc_ko" rows="4">{{ (data.description_i18n.ko if data.description_i18n else '')|e }}</textarea>
+        </div>
+
+        <div class="row">
+            <label for="desc_en">{{ '설명(영어)' if _lang=='ko' else 'Description (English)' }}</label>
+            <textarea id="desc_en" name="desc_en" rows="4">{{ (data.description_i18n.en if data.description_i18n else '')|e }}</textarea>
+        </div>
+
+        <div class="row">
+            <label for="tagsInput">{{ '태그' if _lang=='ko' else 'Tags' }}</label>
+            <input id="tagsInput" type="text" placeholder="{{ '엔터로 추가' if _lang=='ko' else 'Enter to add' }}">
+            <div id="tagsWrap" class="chips" aria-live="polite">
+                {% for tg in (data.tags or []) %}
+                    <span class="chip" data-tag="{{ tg|e }}">{{ tg|e }}<button type="button" class="x" aria-label="remove">×</button></span>
+                {% endfor %}
+            </div>
+            {% if errors.tags %}<div class="error">{{ errors.tags }}</div>{% endif %}
+        </div>
+
+        <div class="row inline">
+            <label for="is_visible">{{ '노출' if _lang=='ko' else 'Visible' }}</label>
+            <input type="checkbox" id="is_visible" name="is_visible" value="1" {{ 'checked' if data.is_visible is defined and data.is_visible else '' }}>
+        </div>
+
+        <div class="row inline">
+            <label for="order">{{ '정렬' if _lang=='ko' else 'Order' }}</label>
+            <input id="order" name="order" type="number" step="1" value="{{ (data.order if data.order is not none else 0)|int }}" style="width:120px">
+            {% if errors.order %}<div class="error">{{ errors.order }}</div>{% endif %}
+        </div>
+    </section>
+
+    <aside class="card">
+        <div class="row">
+            <label for="imgFile">{{ '이미지 업로드' if _lang=='ko' else 'Upload Images' }}</label>
+            <input id="imgFile" type="file" accept=".jpg,.jpeg,.png,.webp" multiple>
+            <small class="badge">{{ '허용: jpg/jpeg/png/webp, 최대 ' if _lang=='ko' else 'Allowed: jpg/jpeg/png/webp, up to ' }}{{ (UPLOAD_MAX_SIZE_MB or 10)|int }}MB</small>
+            {% if errors.images %}<div class="error">{{ errors.images }}</div>{% endif %}
+        </div>
+
+        <div class="row">
+            <div class="img-grid" id="imgGrid">
+                {% for im in (data.images or []) %}
+                    <div class="img-tile" data-url="{{ im.url|e }}">
+                        <img src="{{ im.url|e }}" alt="">
+                        <button type="button" class="btn x" aria-label="remove" data-action="remove-image">×</button>
+                        <input type="hidden" name="images[]" value="{{ im.url|e }}">
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="row" style="margin-top:12px;display:flex;gap:8px">
+            <a class="btn" href="/admin/gallery">{{ '취소' if _lang=='ko' else 'Cancel' }}</a>
+            <button class="btn" type="submit">{{ '저장' if _lang=='ko' else 'Save' }}</button>
+        </div>
+    </aside>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/admin/gallery.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+<script {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+    window.addEventListener('DOMContentLoaded', function () {
+        if (window.initAdminGallery) window.initAdminGallery();
+    });
+</script>
+{% endblock %}
+    

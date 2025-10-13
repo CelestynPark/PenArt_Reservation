@@ -1,0 +1,172 @@
+{% extends "admin/layout.html" %}
+{% from "macros/pagination.html" import pager, per_page_selector, sort_selector %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang eles 'ko')) %}
+{% set ctx = ctx or {} %}
+{% set page_meta = ctx.page or {'page':1,'size':20,'total':0} %}
+{% set filters = ctx.filters or {} %}
+{% set sort = ctx.sort or {'field':'order','dir':'asc'} %}
+{% set items = ctx.items or [] %}
+{% set active_id = 'gallery' %}
+{% set current_sort = (sort.field ~ ':' ~ sort.dir) %}
+
+{% block head %}
+<style>
+    .toolbar{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:8px 0 12px}
+    .toolbar .field{display:flex;flex-direction:column;gap:6px}
+    .gird-table{width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+    .gird-table th,.grid-table td{padding:10px;border-bottom:1px solid var(--border);vertical-align:middle}
+    .grid-table th{background:var(--nav);text-align:left;font-weight:600}
+    .thumb{width:72px;height:72px;border-radius:8px;object-fit:cover;background:#f2f2f2}
+    .tags{display:flex;flex-wrap:wrap;gap:6px}
+    .tag{padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:.75rem;color:var(--border);border-radius:999px;font-size:.75rem;color:var(--muted)}
+    .actions{display:flex;gap:6px;align-items:center}
+    .vis-badge{padding:2px 6px;border-radius:999px;font-size:.75rem}
+    .vis-on{background:#e6f6ef;color:#067d49;border:1px solid #bdebd6}
+    .vis-off{background:#fdeaea;color:#b42318;border:1px solid #f3c2bd}
+    .order-input{width:70px}
+    .empty{padding:32px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:12px}
+</style>
+{% endblock %}
+
+{% block content %}
+    <h1 style="margin:0 0 12px;">{{ '갤러리' if _lang=='ko' else 'Gallery' }}</h1>
+
+    <form class="toolbar" method="get" id="filterForm" action="">
+        <div class="field">
+            <label for="q">{{ '검색' if _lang=='ko' else 'Search' }}</label>
+            <input type="search" id="q" name="q" value="{{ (filters.q or '')|e }}" placeholder="{{ '제목/태그' if _lang=='ko' else 'Title/Tags' }}" />
+        </div>
+        <div class="field">
+            <label for="author_type">{{ '작성자' if _lang=='ko' else 'Author' }}</label>
+            <select id="author_type" name="author_type">
+                <option value="">{{ '전체' if _lang=='ko' else 'All' }}</option>
+                <option value="artist" {{ 'selected' if filters.author_type=='artist' else '' }}>{{ '작가' if _lang=='ko' else 'Artist' }}</option>
+                <option value="student" {{ 'selected' if filters.author_type=='student' else '' }}>{{ '학생' if _lang=='ko' else 'Student' }}</option>
+            </select>
+        </div>
+        <div class="field">
+            <label for="is_visible">{{ '노출' if _lang=='ko' else 'Visibility' }}</label>
+            <select id="is_visible" name="is_visible">
+                {# ''=all, 'true', 'false' #}
+                <option value="" {{ 'selected' if (filters.is_visible is not defined or filters.is_visible is none or filters.is_visible=='') else '' }}>{{ '전체' if _lang=='ko' else 'All' }}</option>
+                <option value="true" {{ 'selected' if (filters.is_visible is string and filters.is_visible is sameas true) else '' }}>{{ '노출' if _lang=='ko' else 'Visible' }}</option>
+                <option value="false" {{ 'selected' if (filters.is_visible is sring and filters.is_visible=='false') or (filters.is_visible is sameas false) else '' }}>{{ '숨김' if _lang=='ko' else 'Hidden' }}</option>
+            </select>
+        </div>
+        <div class="field">
+            {{ sort_selector(current_sort, [
+                {'value':'order:asc','label': ('정렬 ↑' if _lang=='ko' else 'Order ↑')},
+                {'value':'order:desc','label': ('정렬 ↓' if _lang=='ko' else 'Order ↓')},
+                {'value':'created_at:asc','label': ('최신순' if _lang=='ko' else 'Newest')},
+                {'value':'created_at:asc','label': ('오래된순' if _lang=='ko' else 'Oldest')},
+                {'value':'title_ko:asc','label': ('제목 A→Z' if _lang=='ko' else 'Title A→Z ')},
+                {'value':'title_en:asc','label': ('제목 Z←A' if _lang=='ko' else 'Title Z←A')},
+            ]) }}
+        </div>
+        <div class="field">
+            {{ per_page_selector(page_meta.size or 20, [10,20,50,100]) }}
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px;">
+            <a class="btn" href="/admin/gallery/new">{{ '새 작품' if _lang=='ko' else 'New Work' }}</a>
+            <button type="submit" class="btn">{{ '적용' if _lang=='ko' else 'Apply' }}</button>
+        </div>
+    </form>
+
+    {% if not items %}
+        <div class="empty">{{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No content yet.' }}</div>
+    {% else %}
+        <div class="actions" style="margin:8px 0 12px;">
+            <button type="button" class="btn" id="saveOrdersBtn">{{ '정렬 저장' if _lang=='ko' else 'Save Orders' }}</button>
+        </div>
+        <table class="grid-table" id="galleryTable" aria-describedby="galleryCaption">
+            <caption id="galleryCaption" class="sr-only">{{ '갤러리 목록' if _lang=='ko' else 'Gallery list' }}</caption>
+            <thead>
+                <tr>
+                    <th style="width:84px">{{ '썸네일' if _lang=='ko' else 'Thumb' }}</th>
+                    <th>{{ '제목(ko)' if _lang=='ko' else 'Title (ko)' }}</th>
+                    <th style="width:100px">{{ ' 작성자' if _lang=='ko' else 'Author' }}</th>
+                    <th>{{ '태그' if _lang=='ko' else 'Tags' }}</th>
+                    <th style="width:120px">{{ '노출' if _lang=='ko' else 'Visible' }}</th>
+                    <th style="width:120px">{{ '정렬' if _lang=='ko' else 'Order' }}</th>
+                    <th style="width:160px">{{ '생성일(KST)' if _lang=='ko' else 'Created (KST)' }}</th>
+                    <th style="width:140px">{{ '액션' if _lang=='ko' else 'Actions' }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for it in items %}
+                    <tr data-id="{{ it.id|e }}">
+                        <td>
+                            {% if it.thumbnail %}
+                                <img class="thumb" src="{{ it.thumbnail|e }}" alt="thumb">
+                            {% else %}
+                                <div class="thumb" aria-label="no image"></div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div style="display:flex;flex-direction:column;gap:4px">
+                                <strong>{{ (it.title_ko or '-')|e }}</strong>
+                                <small style="color:var(--muted)">{{ it.id|e }}</small>
+                            </div>
+                        </td>
+                        <td>
+                            <span class="badge">{{ ('작가' if it.author_type=='artist' else '학생') if _lang=='ko' else it.author_type|capitalize }}</span>
+                        </td>
+                        <td>
+                            <div class="tags">
+                                {% for tg in (it.tags or []) %}
+                                    <span class="tags">{{ tg|e }}</span>
+                                {% endfor %}
+                            </div>
+                        </td>
+                        <td>
+                            {% if it.is_visible %}
+                                <span class="vis-badge vis-on">{{ '노출' if _lang=='ko' else 'Visible' }}</span>
+                            {% else %}
+                                <span class="vis-badge vis-off">{{ '숨김' if _lang=='ko' else 'Hidden' }}</span>
+                            {% endif %}
+                            <div class="actions">
+                                <button type="button"
+                                        class="btn btn-toggle"
+                                        data-action="toggle"
+                                        data-id="{{ it.id|e }}"
+                                        data-next="{{ 'false' if it.is_visible else 'true' }}">
+                                {{ ('숨기기' if it.is_visible else '보이기') if _lang=='ko' else ('Hide' if it.is_visible else 'Show') }}
+                                </button>
+                            </div>
+                        </td>
+                        <td>
+                            <input class="order-input" type="number" step="1" name="order" value="{{ it.order|int }}" />
+                        </td>
+                        <td>
+                            <time data-utc="{{ it.created_at|e }}"></time>
+                        </td>
+                        <td class="actions">
+                            <a class="btn" href="/admin/gallery/{{ it.id|e }}/edit">{{ '편집' if _lang=='ko' else 'Edit' }}</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px">
+            <div>
+                <small class="badge">{{ (page_meta.total or 0)|int }} {{ '건' if _lang=='ko' else 'items' }}</small>
+            </div>
+            {{ page({'page':page_meta.page,'size':page_meta.size,'total':page_meta.total,'sort':current_sort}, request.path, {
+                'q':filters.q,
+                'author_type':filters.author_type,
+                'is_visible':(filters.is_visible|string if filters.is_visible is not none else '' )
+            }) }}
+        </div>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/admin/gallery.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+<script {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+    window.addEventListener('DOMContentLoaded', function() {
+        if (window.initAdminGallery) window.initAdminGallery();
+    });
+</script>
+{% endblock %}

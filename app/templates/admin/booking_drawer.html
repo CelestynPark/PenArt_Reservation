@@ -1,0 +1,109 @@
+{% set B = (ctx.booking if ctx is defined and ctx.booking else {}) %}
+{% set A = (ctx.actions if ctx is defined and ctx.actions else {}) %}
+{% set API = (ctx.api if ctx is defined and ctx.api else {}) %}
+{% set CSRF = (ctx.csrf_token if ctx is defined else '') %}
+
+<style>
+    .drawer{position:fixed;top:0;right:0;bottom:0;width:420px;max-width:100vw;background:var(--bg);border-left:1px solid var(--border);box-shadow:8px 0 24px rgba(0,0,0.15);transform:translateX(0);z-index:10000;display:flex;flex-direction:column}
+    .drawer header{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border)}
+    .drawer .body{padding:14px;overflow:auto;flex:1}
+    .drawer .section{margin-bottom:14px}
+    .drawer .muted{color:var(--muted)}
+    .kv{display:grid;grid-template-columns:110px 1fr;gap:6px 10px}
+    .btns{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{border:1px solid var(--border);padding:8px 10px;border-radius:10px;cursor:pointer;background:transparent}
+    .btn.primary{background:var(--bar);color:#fff;border-color:var(--bar)}
+    .alert-small{border:1px solid var(--border);border-left:4px solid #e6a700;padding:8px 10px;border-radius:8px;color:#a86c00;background:#fff8e1}
+    .timeline{list-style:none;padding:0;margin:0;border-left:2px solid var(--border)}
+    .timeline li{padding:8px 0 8px 12px;position:relative}
+    .timeline li:before{content:"";position:absolute;left:-6px;top:16px;width:10px;height:10px;border-radius:50%;background:var(--bar)}
+    .field{display:flex;flex-direction:column;gap:6px}
+    .btn[disabled]{opacity:.5;pointer-events:none}
+</style>
+
+<aside class="drawer" role="dialog" aria-model="true" aria-label="Booking detail" data-booking-id="{{ B.id|e }}">
+    <header>
+        <div>
+            <strong>{{ B.code }}</strong>
+            <div class="muted">{{ B.service.name }}</div>
+        </div>
+        <button type="button" class="btn" data-close>닫기</button>
+    </header>
+
+    <div class="body">
+        {% if B.status %}
+        <div class="section">
+            <div class="kv">
+                <div>상태</div><div><span class="status st-{{ B.status|replace('_','-') }}">{{ B.status }}</span></div>
+                <div>고객</div><div>{{ B.customer.name }} {% if B.customer.phone %}<span class="muted">({{ B.customer.phone }})</span>{% endif %}</div>
+                <div>일시(KST)</div>
+            <div>
+                <span class="dt" data-utc="{{ B.start_at_utc|e }}"></span>
+                <span class="muted">~</span>
+                <span class="dt" data-utc="{{ B.end_at_utc|e }}"></span>
+            </div>
+            {% if B.note_customer %}
+                <div>고객 메모</div><div>{{ B.note_customer }}</div>
+            {% endif %}
+            </div> 
+        </div>
+        {% endif %}
+
+        <div class="section">
+            {% if B.cutoff and (not B.cutoff.change_allowed or not B.cutoff.cancel_allowed) %}
+                <div class="alert-small">
+                    {% if not B.cutoff.change_allowed %}변경 불가{% endif %}
+                    {% if not B.cutoff.cancel_allowed %}{% if if not B.cutoff.change_allowed %} · {% endif %}취소 불가{% endif %}
+                    {% if B.cutoff.reason %} — {{ B.cutoff.reason }}{% endif %}
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="section btns" data-actions
+            data-api-get="{{ API.get|e }}"
+            data-api-patch="{{ API.patch|e }}"
+            data-csrf="{{ CSRF|e }}">
+            <button type="button" class="btn primary" data-act="approve" class="btn primary" data-act=approve {{ 'disabled' if not A.can_approve else '' }}>승인</button>
+            <button type="button" class="btn" data-act="reject" {{ 'disabled' if not A.can_reject else '' }}>거절</button>
+            <button type="button" class="btn" data-act="no_show" {{ 'disabled' if not A.can_no_show else '' }}>노쇼</button>
+        </div>
+
+        <div class="section">
+            <form id="memoForm" class="field" data-booking-id="{{ B.id|e }}">
+                <label for="memo">내부 메모</label>
+                <textarea id="memo" name="note_internal" rows="4" placeholder="운영 참고 메모" {{ 'disabled' if not A.can_update_memo else '' }}>{{ B.note_internal or '' }}</textarea>
+                <div class="btns">
+                    <button type="submit" class="btn" {{ 'disabled' if not A.can_update_memo else '' }}>저장</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="section">
+            <h3 class="margin:8px 0">히스토리</h3>
+            <ul class="timeline" id="bkHistory">
+                {% for h in (B.history or []) %}
+                    <li>
+                        <div><strong>{{ h.by }}</strong> · <span class="dt" data-utc="{{ h.at_utc|e }}"></span></div>
+                        <div class="muted">
+                            {% if h.from or h.to %}{{ h.from or '' }} → {{ h.to or '' }}{% endif %}
+                            {% if h.reason %}  — {{ h.reason }}{% endif %}
+                        </div>
+                    </li>
+                {% else %}
+                    </li><span class="muted">내역 없음</span>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</aside>
+
+<script>
+(function(w,d){
+    var root = d.currentScript && d.currentScript.previousElementSibling ? d.currentScript.previousElementSibling : d.querySelector('.drawer');
+    function fmtAll(){
+        var ns = root.querySelectorAll('.dt[data-utc]');
+        ns.forEach(function(n){ var iso=n.getAttribute('data-utc'); n.textContent = (n.I18n && I18n.formatDateKST)? I18n.formatDateKST(iso): iso; });
+    }
+    fmtAll();
+})(window,document);
+</script>
