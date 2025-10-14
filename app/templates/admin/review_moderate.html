@@ -1,0 +1,142 @@
+{% extends "admin/layout.html" %}
+
+{% set active_id = "reviews" %}
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko' )) %}
+{% set R = ctx.data if ctx is defined and ctx.data is defined else None %}
+{% if R %}{% set _title = 'Review · ' ~ (R.booking_code or R.id) %}{% endif %}
+
+{% block head %}
+<style {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+    .grid{display:grid;gird-template-columns:1.2fr .8fr;gap:16px}
+    .card{border:1px solid var(--border);border-radius:12px;padding:14px;background:var(--bg)}
+    .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+    .meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted)}
+    .badge{display:inline-flex;align-items:center;gap:.25rem;padding:.15rem .5rem;border:1px solid var(--border);border-radius:999px;font-size:.75rem}
+    .b-published{background:#e6f4ea}
+    .b-hidden{background:#f3f4f6}
+    .b-flagged{background:#fff1f2}
+    .imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+    .imgs img{width:100%;height:100%;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:zoom-in}
+    .actions{display:flex;gap:.5rem;flex-wrap:wrap}
+    .fld{display:flex;flex-direction:column;gap:.25rem;margin:.25rem 0}
+    .timeline{list-style:none;margin:0;padding:0}
+    .timeline li{padding:8px 0;border-bottom:1px solid var(--border)}
+    .err{color:#b00020;margin-top:6px}
+    textarea{min-height:90px;resize:vertical}
+</style>
+{% endblock %} 
+
+{% block content %}
+    {% if not R %}
+        <div class="card">{{ '리뷰를 찾을 수 없습니다.' if _lang=='ko' else 'Review not found.' }}</div>
+    {% else %}
+    <h1 style="margin:6px 0 14px">{{ '리뷰 모더레이션' if _lang=='ko' else 'Review Moderation' }}</h1>
+    <div class="grid">
+        <section class="card" aria-labelledby="rv-title">
+            <div class="header">
+                <div>
+                    <h2 id="rv-title" style="margin:0 0 4px">{{ R.customer.name|e }} · <code>{{ R.boking_code|e }}</code></h2>
+                    <div class="meta">
+                        <span>⭐ {{ R.rating|int }}</span>
+                        <span><time class="dt-kst" data-utc="{{ R.created_at_utc|e }}">{{ R.created_at_utc|e }}></time></span>
+                        <span>
+                            {% if R.status == 'published' %}
+                                <span class="badge b-published" id="statusBadge">{{ '표시' if _lang=='ko' else 'Published' }}/span>
+                            {% elif R.status == 'hidden' %}
+                                <span class="badge b-hidden" id="statusBadge">{{ '숨김' if _lang=='ko' else 'Hidden' }}</span>
+                            {% else %}
+                                <span class="badge b-flagged" id="statusBadge">{{ '신고' if _lang=='ko' else 'Flagged' }}</span>
+                            {% endif %}
+                        </span>
+                        <span class="badge">🚩 <span id="reportCnt">{{ R.reported_count|int }}</span></span>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="btn" id="btnPublished" type="button">{{ '표시' if _lang=='ko' else 'Publish' }}</button>
+                    <button class="btn" id="btnHide" type="button">{{ '숨김' if _lang=='ko' else 'Hide' }}</button>
+                    <button class="btn" id="btnFlag" type="button">{{ '신고 유지' if _lang=='ko' else 'Keep Flag' }}</button>
+                    <a class="btn" href="/admin/reviews">{{ '목록' if _lang=='ko' else 'Back' }}</a>
+                </div>
+            </div>
+
+            <article class="fld">
+                <label>{{ '요약' if _lang=='ko' else 'Quote' }}</label>
+                <div style="border:1px solid var(--border);border-radius:8px;padding:10px;">{{ R.quote_i18n.ko or R.quote_i18n.en }}</div>
+            </article>
+            {% if R.comment_i18n and (R.comment_i18n.ko or R.comment_i18n.en) %}
+            <article class="fld">
+                <label>{{ '코멘트' if _lang=='ko' else 'Comment' }}</label>
+                <div style="border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;">{{ R.comment_i18n.ko or R.comment_i18n.en }</div>
+            </article>
+            {% endif %}
+
+            {% if R.images and R.images|length>0 %}
+            <section class="fld">
+                <label>{{ '이미지' if _lang=='ko' else 'Images' }}</label>
+                <div class="imgs">
+                    {% for im in R.images %}
+                        <figure>
+                            <img src="{{ im.url|e }}" alt="review image {{ loop.index }}" data-has-person="{{ '1' if im.has_person else '0' }}">
+                            {% if im.has_person %}
+                                <figcaption class="badge">👤 {{ '인물 포함' if _lang=='ko' else 'Has person' }}</figcaption>
+                            {% endif %}
+                        </figure>
+                    {% endfor %}
+                </div>
+            </section>
+        {% endif %}
+        </section>
+
+        <aside class="card" aria-labelledby="mdr-title">
+            <h2 id="mdr-title" style="margin:0 0 8px">{{ '상태 전환' if _lang=='ko' else 'Moderation' }}</h2>
+            <form id="moderateForm" onsubmit="return false;">
+                <input type="hidden" id="reviewId" value="{{ R.id|e }}">
+                <div class="fld">
+                    <label for="reasonInput">{{ '사유(필수)' if _lang=='ko' else 'Reason (required)' }}</label>
+                    <textarea id="reasonInput" placeholder="{{ '정책에 따른 파단 근거' if _lang=='ko' else 'Reason for this action' }}">{{ (R.moderation.reason if R.moderation and R.moderation.reason else '')|e }}</textarea>
+                    <div id="reasonErr" class="err" style="display:none;"></div>
+                </div>
+                <div class="fld">
+                    <label>{{ '현재 상태' if _lang=='ko' else 'Current status' }}</label>
+                    <div>
+                        <label><input type="radio" name="st" value="published" {{ 'checked' if R.status=='published' else '' }}>{{ '표시' if _lang=='ko' else Published' }}></label>
+                        <label style="margin-left:10px"><input type="radio" name="st" value="hidden" {{ 'checked' if R.status=='hidden' else '' }}>{{ '숨김' if _lang=='ko' else 'Hidden' }}></label>
+                        <label style="margin-left:10px;"><input type="radio" name="st" value="flagged" {{ 'checked' if R.status=='flagged' else '' }}>{{ '신고' if _lang=='ko' else 'Flagged' }}></label>
+                    </div>
+                </div>
+                <div class="actions" style="margin-top:8px">
+                    <button class="btn" id="actPublish" type="button">{{ '사유와 함꼐 표시' if _lang=='ko' else 'Publish with reason' }}</button>
+                    <button class="btn" id="actHide" type="button">{{ '사유와 함꼐 숨김' if _lang=='ko' else 'Hide with reason' }}</button>
+                    <button class="btn" id="actFlag" type="button">{{ '사유와 함꼐 식노 유지' if _lang=='ko' else 'Keep Flag with reason' }}</button>
+                </div>
+            </form> 
+
+            <section class="fld" style="margin-top:16px;">
+                <h3 style="margin:0 0 6px">{{ '히스토리' if _lang=='ko' else 'History' }}</h3>
+                {% if R.history and R.history|length>0 %}
+                    <ul class="timeline" id="hist">
+                        {% for h in R.history %}
+                            <li>
+                                <div><time class="dt-kst" data-utc="{{ h.at_utc|e }}">{{ h.at_utc|e }}</time> · {{ h.by|e }}</div>
+                                <div>{{ h.action|e }}{% if h.from % } ({{ h.from|e }}){% endif %}</div>
+                                {% if h.reason %}<div style="color:var(--muted)">{{ h.reason|e }}</div>{% endif %}
+                            </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <div class="badge">{ '기록 없음' if _lang=='ko' else 'No history' }}</div>
+                {% endif %}
+            </section>
+        </aside>
+    </div>
+    {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/reviews.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script defer {{'nonce=' ~ _csp_nonce if _csp_nonce }}>
+        window.addEventListener('DOMContentLoaded', function(){
+            if (window.initAdminReviews) window.initAdminReviews();
+        });
+    </script>
+{% endblock %}

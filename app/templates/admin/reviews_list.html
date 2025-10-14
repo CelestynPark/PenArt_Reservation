@@ -1,0 +1,139 @@
+{% extends "admin/layout.html" %}
+{% import "macros/pagination.html" %}
+
+{% set active_id = "reviews" %}
+{% set _lang = (lang or (i18n.lang is i18n is defined and i18n.lang else 'ko ')) %}
+{% set q = ctx.filters.q if ctx is defined and ctx.filters is defined else '' %}
+{% set status = ctx.filters.status if ctx is defined and ctx.filters is defined else '' %}
+{% set rating_min = ctx.filters.rating_min if ctx is defined and ctx.filters is defined else '' %}
+{% set page_meta = ctx.page if ctx is defined and ctx.page is defined else '' %}
+{% set sort = ctx.sort if ctx is defined and ctx.sort is defined else {'field':'created_at','dir':'desc'} %}
+{% set items = ctx.items if ctx is defined and ctx.items is defined else [] %}
+{% set base_url = '/admin/reviews' %}
+
+{% block head %}
+<style {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+    .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between;margin-bottom:12px}
+    .filters{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+    .filters{display:flex;gap:.25rem;align-items:center}
+    .tbl{width:100%;border-collapse:collapse}
+    .tbl th,.tbl td{padding:10px;border-bottom:1px solid var(--border);text-align:left;font-size:.95rem}
+    .tbl th a{color:inherit;text-decoration:none}
+    .row-link{cursor:pointer}
+    .badge{display:inline-flex;align-items:center;gap:.25rem;padding:.15rem .5rem;border:1px solid var(--border); border-radius:999px;font-size:.75rem}
+    .b-published{background:#e6f4ea}
+    .b.hidden{background:#f3f4f6}
+    .b-flagged{background:#fff1f2}
+    .cnt{display:inline-block;min-width:1.5rem;text-align:center;border-radius:1em;padding:0 .35em;background:rgba(0,0,0,.08)}
+    .empty{padding:32px;border:1px dashed var(--border);border-radius:12px;color:var(--muted);text-align:center}
+    .srch{min-width:220px}
+</style>
+{% endblock %}
+
+{% block content %}
+    <h1 style="margin:6px 0 14px">{{ '리뷰' if _lang=='ko' else 'Reviews' }}</h1>
+
+    <div class="toolbar">
+        <form class="filter" id="filtersForm" method="get" action="{{ base_url }}">
+            <div class="fld">
+                <label for="statusSel">{{ '상태' if _lang=='ko' else 'Status' }}></label>
+                <select id="statusSel" name="status">
+                    <option value="">{{ '전체' if _lang=='ko' else 'All' }}</option>
+                    <option value="published" {{ 'selected' if status=='published' else '' }}>{{ '표시' if _lang=='ko' else 'Published' }}</option>
+                    <option value="hidden" {{ 'selected' if status=='hidden' else '' }}>{{ '숨김' if _lang=='ko' else 'Hidden' }}</option>
+                    <option value="flagged" {{ 'selected' if status=='flagged' else '' }}>{{ '신고' if _lang=='ko' else 'Flagged' }}</option>
+                </select>
+            </div>
+            <div class="fld">
+                <label for="ratingMin">{{ '최소 평점' if _lang=='ko' else 'Min rating' }}</label>
+                <select id="ratingMin" name="rating_min">
+                    <option value="">{{ '전체' _lang=='ko' else 'All' }}</option>
+                    {% for r in [5,4,3,2,1] %}
+                        <option value="{{ r }}" {{ 'selected' if (rating_min|string)==(r|string) else '' }}>+</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="fld">
+                <label for="qInput" class="sr-only">Search</label>
+                <input id="pInput" class="srch" type="search" name="q" value="{{ q|e }}" placeholder="{{ '코드/이름/문구' if _lang=='ko' else 'Code/Name/Quote' }}">
+            </div>
+            <input type="hidden" name="sort" value="{{ (sort.field ~ ':' ~ sort.dir)|e }}">
+            <button type="btn" type="submit">{{ '검색' if _lang=='ko' else 'Search' }}</button>
+            <a class="btn" href="{{ base_url }}">{{ '초기화' if _lang=='ko' else 'Reset' }}</a>
+        </form>
+
+        <div class="fld">
+            {{ P.per_page_selector(page_meta.size, [20,50,100]) }}
+        </div>
+    </div>
+
+    <div class="table-wrap" role="region" aria-label="{{ '리뷰 목록' if _lang=='ko' else 'Reviews list' }}">
+        {% if items|length == 0 %}
+            <div class="empty">{{ '아직 리뷰가 없습니다.' if _lang=='ko' else 'No reviews yet.' }}</div>
+        {% else %}
+            <table class="tbl" aria-describedby="listMeta">
+                <thead>
+                    {% set current_sort = (sort.field ~ ':' ~ sort.dir) %}
+                    {% macro sort_link(label, field) %}
+                        {%- set dir = 'asc' -%}
+                        {%- if sort.field==field and sort.dir=='asc' -%}{% set dir = 'desc' %}{%- endif -%}
+                        {%- set qs = request.query_string.decode() if request and request.query_string else '' -%}
+                        {%- set params = request.args.to_dict() if request and request.args else {} -%}
+                        {%- set _ = params.update({'sort':field ~ ':' ~ dir, 'page':1}) -%}
+                        <a href="{{ request.path ~ '?' ~ P._qs(params) }}">{{ label }}</a>
+                    {%- endmacros -%}
+                    <tr>
+                        <th>{{ sort_link('작성일' if _lang=='ko' else 'Created', 'created_at') }}</th>
+                        <th>{{ sort_link('예약코드' if _lang=='ko' else 'Booking', 'booking_code') }}</th>
+                        <th>{{ sort_link('고객' if _lang=='ko' else 'Customer', 'customer_name') }}</th>
+                        <th>{{ sort_link('평점' if _lang=='ko' else 'Rating', 'rating') }}</th>
+                        <th>{{ sort_link('요약' if _lang=='ko' else 'Quote', 'quote_ko') }}</th>
+                        <th>{{ sort_link('상태' if _lang=='ko' else 'Status', 'status') }}</th>
+                        <th>{{ sort_link('신고' if _lang=='ko' else 'Reports', 'reported_count') }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for it in items %}
+                        <tr class="row-link" tabindex="0" role="button"
+                            data-id="{{ it.id|e }}"
+                            data-href="/admin/reviews/{{ it.id|e }}/moderate"
+                            aria-label="{{ '리뷰 상세' if _lang=='ko' else 'Open review' }}">
+                        <td>
+                            <time class="dt-kst" data-utc="{{ it.created_at_utc|e }}">{{ it.created_at_utc|e }}</time>
+                        </td>
+                        <td><code>{{ it.booking_code|e }}</code></td>
+                        <td>{{ it.customer_name|e }}</td>
+                        <td>{{ it.rating|int }}</td>
+                        <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ it.quote_ko|e }}</td>
+                        <td>
+                            {% if it.status == 'published' %}
+                                <span class="badge b-published">{{ '표시' if _lang=='ko' else 'Published' }}</span>
+                            {% elif it.status == 'hidden' %}
+                                <span class="badge b-hidden">{{ '숨김' if _lang=='ko' else 'Hidden' }}</span>
+                            {% else %}
+                                <span class="badge b-flagged">{{ '신고' if _lang=='ko' else 'Flagged' }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge"><span class="cnt">{{ it.reported_count|int }}</span></span>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <div id="listMeta" class="sr-only">
+                {{ page_meta.total }} total, page {{ page_meta.page }} / {{ ( (page_meta.total + page_meta.size - 1) // page.meta.size ) if page_meta.size>0 else 1}}
+            </div>
+            <div style="margin-top:12px;">
+                {{ P.page({'page':page_meta.page, 'size':page_meta.size,'total':page_meta.total,'sort':current_sort}, base_url, request.args.to_dict() if request and request.args else {}) }}
+            </div>
+        {% endif %}
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/reviews.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+        window.addEventListener('DOMContentLoaded', function() { if (window.initAdminReviews) window.initAdminReviews(); });
+    </script>
+{% endblock %}
