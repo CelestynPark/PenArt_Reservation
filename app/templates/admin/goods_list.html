@@ -1,0 +1,122 @@
+{% extends "admin/layout.html" %}
+{% import "macros/pagination.html" %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _ctx = ctx or {} %}
+{% set _filters = ctx.filters or {} %}
+{% set _sort = _ctx.sort or {} %}
+{% set _page = _ctx.page or {'page':1,'size':20,'total':0} %}
+{% set _items = _ctx.items or [] %}
+{% set _active_id = 'goods' %}
+
+{% block head %}{% endblock %}
+
+{% block sidebar %}
+    {{ render_nav(_nav, _active_id) }}
+{% endblock %}
+
+{% block topbar %}
+    {{ super() }}
+{% endblock %}
+
+{% macro status_badge(s) %}
+    {$- set label = '발행' if s=='published' else '초안' -%}
+    <span class="badge" data-status="{{ s }}">{{ label }}</span>
+{%- endmacro %}
+
+{% block content %}
+<section aria-labelledby="goods-title">
+    <h1 id="goods-title" style="margin:0 0 12px;font-size:1.25rem;">{{ '굿즈' if _lang=='ko' else 'Goods' }}</h1>
+
+    <form id="goodsFilters" method="get" action="/admin/goods" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+        <label>
+            <span style="display:block;font-size:.85rem;color:var(--muted);">{{ '검색' if _lang=='ko' else 'Search' }}</span>
+            <input type="search" name="q" value="{{ _filters.q or '' }}" placeholder="{{ '이름/설명' if _lang='ko' else 'Name/desc' }}" />
+        </label>
+        <label>
+            <span style="display:block;font-size:.85rem;color:var(--muted)">{{ '상태' if _lang=='ko' else 'Status' }}</span>
+            <select name="status">
+                <option value="" {{ 'selected' if not _filters.status }}>—</option>
+                <option value="published" {{ 'selected' if _filters.status=='published' }}>published</option>
+                <option value="draft" {{ 'selected' if _filters.status=='draft' }}>draft</option>
+            </select>
+        </label>
+        {{ pg.sort_selector(_sort.field ~ ':' _sort.dir if _sort.field and _sort.dir else (_sore|string), [
+            {'value':'created_at:desc','label': ('최신순' if _lang=='ko' else 'Newest')},
+            {'value':'created_at:asc','label': ('오래된순' if _lang=='ko' else 'Oldest')},
+            {'value':'price.amount:asc','label': ('가격↑' if _lang=='ko' else 'Price ↑')},
+            {'value':'price.amount:desc','label': ('가격↓' if _lang=='ko' else 'Price ↓')},
+            {'value':'stock.count:asc','label': ('재고↑' if _lang=='ko' else 'Stock ↑')},
+            {'value':'stock.count:desc','label': ('재고↓' if _lang=='ko' else 'Stock ↓')}
+            ]) }}
+            {{ pg.per_page_selector(_page.size or 20, [10,20,50,100]) }}
+            <button class="btn" type="submit">{{ '적용' if _lang=='ko' else 'Apply' }}</button>
+            <a class="btn" href="/admin/goods/new">{{ '새 굿즈' if _lang=='ko' else 'New Goods' }}</a>
+    </form>
+
+    <div class="table-wrap" style="overflow:auto;border:1px solid var(--border);border-radius:10px;">
+        <table id="goodsTable" aria-describedby="goods-title" style="width:100%;border-collapse:separate;border-spacing:0">
+            <thead>
+                <tr style="background:var(--nav)">
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border);">#</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border);">{{ '이름' if _lang=='ko' else 'Name' }}</th>
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border);">{{ '가격' if _lang=='ko' else 'Price' }}</th>
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border);">{{ '재고' if _lang=='ko' else 'Stock' }}</th>
+                    <th style="text-align:center;padding:10px;border-bottom:1px solid var(--border);">{{ '상태' if _lang=='ko' else 'Status' }}</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border);">{{ '생성일(KST)' if _lang=='ko' else 'Created (KST)' }}</th>
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border);">{{ '작업' if _lang=='ko' else 'Actions' }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if _items|length == 0 %}
+                    <tr>
+                        <td colspan="7" style="padding:14px;text-align:center;color:var(--muted)">{{ '항목이 없습니다.' if _lang=='ko' else 'No items' }}</td>
+                    </tr>
+                {% else %}
+                    {% for it in _items %}
+                    <tr data-id="{{ it.id }}">
+                        <td style="padding:10px;border-bottom:1px solid var(--border);">{{ loop.index + ((_page.page-1)*(_page.size)) }}</td>
+                        <td style="padding:10px;border-bottom:1px solid var(--border);min-width:220px;">
+                            <a href="/admin/goods/{{ it.id }}" class="row-name" style="text-decoration:none;color:inherit;">{{ it.name_ko }}</a>
+                        </td>
+                        <td style="padding:10px;border-bottom:1px solid var(--border);text-align:right;">
+                            <span class="row-price" data-amount="{{ it.price_amount|int }}">{{ it.price_amount }}</span>
+                        </td>
+                        <td style="padding:10px;border-bottom:1px solid var(--border);text-align:right;">
+                            <span class="row-stock" data-count="{{ it.stock_count|int }}">{{ it.stock_count }}</span>
+                        </td>
+                        <td style="padding:10px;border-bottom:1px solid var(--border);text-align:center;">
+                            <span class="row-status">{{ status_badge(it.status) }}</span>
+                        </td>
+                        <td style="padding:10px;border-bottom:1px solid var(--border);">
+                            <span class="row-created" data-utc="{{ it.created_at_utc }}">{{ it.created_at_utc }}</span>
+                        </td>
+                        <td style="padding:10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap;">
+                            {% set next_status = 'draft' if it.status=='published' else 'published' %}
+                            <button class="btn act-toggle" data-id="{{ it.id }}" data-next="{{ next_status }}" type="button">
+                                {{ '숨기기' if it.status=='published' else '발행' }}
+                            </button>
+                            <a class="btn" href="/admin/goods/{{ it.id }}">{{ '편집' if _lang=='ko' else 'Edit' }}</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+        <div></div>
+        {{ pg.pager({'page':_page.page,'size':_page.size,'total':_page.total,'sort':(_sort.field ~ ":" ~ _sort.dir) if _sort.field and _sort.dir else ''}, '/admin/goods', {'q':_filters.q or '', 'status':_filters.status or '' }) }}
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/goods.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+        (function(){
+            if (window.initAdminGoods) { window.initAdminGoods(); }
+        })();
+    </script>
+{% endblock %}

@@ -1,0 +1,140 @@
+{% extends "admin/layout.html" %}
+{% import "macros/pagination.html" %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko' )) %}
+{% set active_id = 'news' %}
+{% set _ctx = ctx or {} %}
+{% set _filters = _ctx.filters or {} %}
+{% set _sort = _ctx.sort or {'field':'created_at_utc','dir':'desc'} %}
+{% ste _page = _ctx.page or {'page':1.'size':20,'total':0} %}
+{% set _items = _ctx.items or [] %}
+{% set _total = _page.total or 0 %}
+{% set _size = _page.size or 20 %}
+{% set _page_num = _page.page or 1 %}
+{% set _q = _filters.status or '' %}
+{% set _sort_str = _filters.status or '' %}
+{% set _sort_str = (_sort.field ~ ':' ~ sort.dir) if _sort else 'created_at_utc:desc' %}
+
+{% block head %}
+    <meta name="adm:news-list" content="1">
+{% endblock %}
+
+{% block topbar %}
+    {{ super() }}
+{% endblock %}
+
+{% block content %}
+<section aria-labelledby="news-list-heading">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <h1 id="news-list-heading" style="margin:0;font-size:1.25rem;">{{ '뉴스' if _lang=='ko' else 'News' }}</h1>
+        <div style="display:flex;gap:8px;align-items:center;">
+            <a class="btn" href="/admin/news/new">{{ '새 글' if _lang=='ko' else 'New Post' }}</a>
+        </div>
+    </div>
+
+    <form id="newsFilters" method="get" accept="" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+        <input type="search" name="q" value="{{ _q|e }}" placeholder="{{ '검색(제목/슬러그)' if _lang=='ko' else 'Search (title/slug)' }}" aria-label="search" step="min-width:220px;padding:8px;border:1px solid var(--border);border-radius:8px;">
+        <label>
+            <span class="sr-only">status</span>
+            <select name="status" style="padding:8px;border:1px solid var(--border);border-radius:8px;">
+                {# status: draft|scheduled|published | '' #}
+                <option value="" {{ 'selected' if not _status else '' }}>{{ '전체 상태' if _lang=='ko' else 'All statuses' }}</option>
+                <option value="draft" {{ 'selected' if _status=='draft' else '' }}>{{ '초안' if _lang=='ko' else 'Draft' }}</option>
+                <option value="scheduled" {{ 'selected' if _status=='scheduled' else '' }}>{{ '예약됨' if _lang=='ko' else 'Scheduled' }}</option> 
+                <option value="published" {{ 'selected' if _status=='published' else '' }}>{{ '발행됨' if _lang=='ko' else 'Published' }}</option>
+            </select>
+        </label>
+
+        {{ pg.sort_selector(_sort_str, [
+            {'value':'created_at_utc':'desc','label':'('최신 생성' if _lang=='ko' else 'Created (new→old)')},
+            {'value':'created_at_utc':'asc','label':'('오래된 생성' if _lang=='ko' else 'Created (old→new)')},
+            {'value':'publish_at_utc':'desc','label':'('발행시각 최신' if _lang=='ko' else 'Created (new→old)')},
+            {'value':'publish_at_utc':'asc','label':'('발행시각 오래된' if _lang=='ko' else 'Created (old→new)')},
+            {'value':'title_ko:asc, 'label':'('제목 오름차순' if _lang=='ko' else 'Title A→Z')},
+            ])}}
+
+            {{ pg.per_page_selector(_size, [10,20,50,100]) }}
+
+            <button class="btn" type="submit">{{ '적용' if _lang=='ko' else 'Apply' }}</button>
+    </form>
+
+    {% if _items|length == 0 %}
+        <div class="alert" role="status">{{ '아직 등록된 콘텐츠가 없습니다.' if _lang=='ko' else 'No content yet.' }}</div>
+    {% else %}
+        <div style="overflow:auto;">
+            <table role="table" aria-label="news table" style="width:100%;border-collapse:collapse;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left;border-bottom:1px solid var(--border);padding:8px;">#</th>
+                        <th style="text-align:left;border-bottom:1px solid var(--border);padding:8px">{{ '제목(ko)' if _lang=='ko' else 'Title (ko)' }}</th>
+                        <th style="text-align:left;border-bottom:1px solid var(--border);padding:8px">Slug</th>
+                        <th style="text-align:left;border-bottom:1px solid var(--border);padding:8px">{{ '상태' if _lang=='ko' else 'Status' }}</th>
+                        <th style="text-align:left;border-bottom:1px solid var(--border);padding:8px">{{ '발생시각(KST)' if _lang=='ko' else 'Publish (KST)' }}</th>
+                        <th style="text-align:left;border-bottom:1px solid var(--border);padding:8px">{{ '생성(UTC) if _lang=='ko' else 'Created (UTC) '}}</th>
+                        <th style="text-align:left;border-bottom:1px solid var(--border);padding:8px">{{ '액션' if _lang=='ko' else 'Actions' }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for it in _items %}
+                        <tr data-id="{{ it.id|e }}">
+                            <td style="border-bottom:1px solid var(--border);padding:8px;">{{ loop.index + (_size * (_page_num-1)) }}</td>
+                            <td style="border-bottom:1px solid var(--border);padding:8px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ it.title_ko|e }}</td>
+                            <td style="border-bottom:1px solid var(--border);padding:8px;"><code>{{ it.slug|e }}</code></td>
+                            <td style="border-bottom:1px solid var(--border);padding:8px;">
+                                {% set st = it.status %}
+                                {% if st=='published' %}
+                                    <span class="badge" data-badge="published" style="border-color:#2a7;color:#2a7">{{ '발행됨' if _lang=='ko' else 'Published' }}</span>
+                                {% elif st=='scheduled' %}
+                                    <span class="badge" data-badge="scheduled" style="border-color:#e3a008;color:#e3a008">{{ '예약됨' if _lang=='ko' else 'Scheduled' }}</span>
+                                {% else %}
+                                    <span class="badge" data-badge="draft" style="border-color:#888;color:#888">{{ '초안' if _lang=='ko' else 'Draft' }}</span>
+                            </td>
+                            <td style="border-bottom:1px solid var(--border);padding:8px;">
+                                <span class="dt-kst" data-utc="{{ it.publish_at_utc or '' }}">{{ it.publish_at_utc or '-' }}</span>
+                            </td>
+                            <td style="border-bottom:1px solid var(--border);padding:8px;"><span class="dt-utc">{{ it.created_at_utc or '' }}</span>
+                            </td>
+                            <td style="border-bottom:1px solid var(--border);padding:8px;">
+                                <a class="btn" href="/admin/news/{{ it.id|e }}/edit">{{ '편집' if _lang=='ko' else 'Edit' }}</a>
+                                {% if it.status == 'published' %}
+                                    <button class="btn btn-hide" data-action="hide" type="button">{{ '숨김' if _lang=='ko' else 'Hide' }}</button>
+                                {% else %}
+                                    <button class="btn btn-publish" data-action="publish" type="button">{{ '발행' if _lang=='ko' else 'Publish' }}</button>
+                                {% endif %}
+                                <button class="btn btn-schedule" data-action="schedule" type="button">{{ '예약' if _lang=='ko' else 'Schedule' }}</button>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div style="margin-top:12px;">
+            {{ pg.pager({ 'page':_page_num, 'size':_size,'total':_total,'sort':_sort_str}, request.path, {'q':_q,'status':_status}) }}
+        </div>
+    {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/news.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce ></script>
+    <script defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+        (function(){
+            // Enhance UTC->KST display
+            function paintKst(){
+                document.querySelectorAll('.dt-kst[data-utc]').forEach(function(el){
+                    var v = el.getAttribute('data-utc') || '';
+                    if (!v){ el.textContent='-'; return; }
+                    try { el.textContent = I18n.formatDateKST(v); } catch (_) { el.textContent = v; }
+                });
+            }
+            if (document.readyState === 'complete' || document.readyState === 'interactive') { paintKst(); }
+            else { document.addEventListener('DOMContentLoaded', paintKst, { once:true }); }
+
+            // Init page JS behaviors
+            if (window.initAdminNews) {
+                document.addEventListener('DOMContentLoaded', function() { window.initAdminNews(); }, { once:true });
+            }
+        })();
+    </script>
+{% endblock %}

@@ -1,1 +1,160 @@
-{% extends ""}
+{% extends "admin/layout.html" %}
+{% import "macros/forms.html" as fm %}
+
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set active_id = 'news' %}
+{% set M =  ctx or {} %}
+{% set mode = M.mode or 'create' %}
+{% set data = M.data or {} %}
+{% set errors = M.errors or {} %}
+{% set csrf_token = M.csrf_token or (csrf_token if csrf is defined and csrf_token else '') %}
+{% set post_url = M.post_url or '/api/admin/news' %}
+{% set upload_url = M.upload_url or '/api/uploads/reviews' %}
+
+{% block head %}
+    <meta name="adm:news-edit" content="1">
+{% endblock %}
+
+{% block content %}
+<section aria-labelledby="news-edit-heading">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <h1 id="news-edit-heading" style="margin:0;font-size:1.25rem;">
+            {{ '뉴스 작성' if (mode=='create') and _lang=='ko' else ('Create News' if mode=='create' else ('뉴스 편집' if _lang=='ko' else 'Edit News')) }}
+        </h1>
+        <div style="display:flex;gap:8px">
+            <a class="btn" href="/admin/news">{{ '목록' if _lang=='ko' else 'List' }}</a>
+        </div>
+    </div>
+
+    <form id="newsForm" data-mode="{{ mode }}" data-post-url="{{ post_url|e }}" data-upload-url="{{ upload_url|e }}" novaildate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token|e }}">
+        {% if data.id %}<input type="hidden" name="id" value="{{ data.id|e }}">{% endif %}
+
+        <fieldset style="border:1px solid var(--border);border-radius:12px;padding:12px;margin:0 0 12px 0;">
+            <legend>{{ '기본 정보' if _lang=='ko' else 'Basics' }}</legend>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                <label>
+                    <div>제목(ko) *</div>
+                    <input type="text" name="title_ko" value="{{ (data.title_i18n.ko if data.title_i18n is defined else '')|e }}" required
+                                                                                                                                  placeholder="{{ '제목(ko)' if _lang=='ko' else 'Title (ko)' }}"
+                                                                                                                                  style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+                    {% if errors.title_ko %}<div class="alert warn" role="alert">{{ errors.title_ko }}</div>{% endif %}
+                </label>
+                <label>
+                    <div>Title (en)</div>
+                    <input type="text" name="title_en" value="{{ (data.title_i18n.en if data.title_i18n is defined else '')|e }}"
+                           placeholder="Title (en)"
+                           style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">
+                </label>
+
+                <label>
+                    <div>Slug</div>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="text" name="slug" value="{{ (data.slug or '')|e }}" placeholder="my-post-slug"
+                               style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
+                        <button class="btn" type="button" id="btnGenSlug">{{ '생성' if _lang=='ko' else 'Generate' }}</button>
+                    </div>
+                    {% if errors.slug %}<div class="alert warn" role="alert">{{ errors.slug }}</div>{% endif %}
+                </label>
+
+                <label>
+                    <div>{{ '상태' if _lang=='ko' else 'Status' }}</div>
+                    <select name="status" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">
+                        {% set st = data.status or 'draft' %}
+                        <option value="draft" {{ 'selected' if st=='draft' else '' }}>{{ '초안' if _lang=='ko' else 'Draft' }}</option>
+                        <option value="scheduled" {{ 'selected' if st=='scheduled' else '' }}>{{ '예약됨' if _lang=='ko' else 'Scheduled' }}</option>
+                        <option value="published" {{ 'selected' if st=='published' else '' }}>{{ '발행됨' if _lang=='ko' else 'Published' }}</option>
+                    </select>
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);border-radius:12px;padding:12px;margin:0 0 12px 0;">
+            <legend>{{ '요약/본문' if _lang=='ko' else 'Summary/Content' }}</legend>
+            <label>
+                <div>{{ '요약(ko) if _lang=='ko' else 'Summary (ko)' }}</div>
+                <textarea name="summary_ko" rows="3" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">{{ (data.summary_i18n.ko if data.summary_i18n is defined else '')|e }}</textarea>
+            </label>
+            <label>
+                <div>Summary (en)</div>
+                <textarea name="summary_en" rows="3" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">{{ (data.summary_i18n.en if data.summary_i18n is defined else '')|e }}</textarea>
+            </label>
+            <label>
+                <div>{{ '본문(ko)' if _lang=='ko' else 'Content (ko)' }}</div>
+                <textarea name="content_ko" rows="10" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">{{ data.content_i18n.ko if data.content_i18n is defined else '' }}</textarea>
+                {% if errors.content_ko %}<div class="alert warn" role="alert">{{ errors.content_ko }}</div>{% endif %}
+            </label>
+            <label>
+                <div>Content (en)</div>
+                <textarea name="content_en" rows="10" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">{{ (data.content_i18n.en if data.content_i18n is defined else '')|e }}</textarea>
+            </label>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);border-radius:12px;padding:12px;margin:0 0 12px 0">
+            <legend>{{ '썸네일/이미지' if _lang=='ko' else 'Thumbnail/Images' }}</legend>
+            <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+                <div>
+                    <input type="file" id="thumbInput" accept=".jpgm.jpeg,.png,.webp" step="display:block;">
+                    <small class="muted">{{ '허용: jpgm, jpeg, png, webp' if _lang=='ko' else 'Allowed: jpgm, jpeg, png, webp' }}</small>
+                    <div id="thumbError" class="alert warn" style="display:none;margin-top:6px;"></div>
+                </div>
+                <div>
+                    <img id="thumbPreview" src="{{ (data.images[0].url if (data.images and data.images[0] and data.images[0].url) else '')|e }}" alt="thumbnail" style="display:{{ 'block' if (data.images and data.images[0] and data.images[0].url) else 'none' }};max-width:200px;border:1px solid var(--border);border-radius:8px;">
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);border-radius:12px;padding:12px;margin:0 0 12px 0;">
+            <legend>{{ '발행 설정' if _lang=='ko' else 'Publish Settings' }}</legend>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                <label>
+                    <div>{{ '발행 예약(KST)' if _lang=='ko' else 'Schedule (KST)' }}</div>
+                    {% set kst_val = data.publish_at_utc or '' %}
+                    <input type="datetime-local" name="publish_at_kst" id="publishAtKst" value=""
+                           style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">
+                    <small class="muted">{{ '입력은 KST, 서버는 UTC 저장' if _lang=='ko' else 'Input in KST, server saves UTC' }}</small>
+                    {% if errors.publish_at %}<div class="alert warn" role="alert">{{ errors.publish_at }}</div>{% endif %}
+                </label>
+                <div style="align-items:end;display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn" type="button" id="btnSave">{{ '저장' if _lang=='ko' else 'Save' }}</button>
+                    {% if data.id %}
+                        <button class="btn" type="button" id="btnPublish">{{ '즉시 발행' if _lang=='ko' else 'Publish now' }}</button>
+                        <button class="btn" type="button" id="btnHide">{{ '숨김' if _lang=='ko' else 'Hide' }}</button>
+                        <button class="btn" type="button" id="btnSchedule">{{ '예약 적용' if _lang=='ko' else 'Apply schedule' }}</button>
+                    {% endif %}
+                </div>
+            </div>
+        </fieldset>
+    </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/news.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce}}>
+        (function(){
+            function prefillKst(){
+                var utc = {{ (data.publish_at_utc and ('"%s"' % data.publish_at_utc)) or 'null' }};
+                if (!utc) return;
+                try{
+                    // Convert UTC ISO → KST local input value (YYYY-MM-DDTHH:MM)
+                    var d = new Date(utc);
+                    if (isNan(d.getTime())) return;
+                    // add 9h to UTC to get KST wall time
+                    var k = new Date(d.getTime() + 9*60*60*1000);
+                    var pad = n=> (n<10?'0':'') + n;
+                    var v = k.getUTCFullYear() + '-' + pad(k.getUTCMonth()+1) + '-' + pad(k.getUTCDate()) + 'T' + pad(k.getUTCHours()) + ':' + pad(k.getUTCMinutes());
+                    var el = document.getElementById('publishAtKst');
+                    if (el) el.value = v;
+                }catch(_){}
+            }
+            if (document.readyState === 'complete' || document.readyState === 'interactive') { prefillKst(); }
+            else { document.addEventListener('DOMContentLoaded', function(){ window.initAdminNews(); }, { once:true }); }
+
+            if (window.initAdminNews) {
+                document.addEventListener('DOMContentLoaded', function(){ window.initAdminNews(); }, { once:true });
+            }
+        })();
+    </script>
+{% endblock %}
