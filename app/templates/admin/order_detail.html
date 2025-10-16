@@ -1,0 +1,71 @@
+{# This template can render standalone with OrderDetailCtx or act as an empty drawer body when included #}
+{% set detail = detail or ctx.detail if ctx is defined and ctx.detail is defined else detail %}
+{% set d = detail.data if detail is defined and detail and detail.data is defined else None %}
+<div class="drawer-head">
+    <strong id="orderDrawerTitle">{{ (d.code if d else 'ORDER') }}</strong>
+    <div class="pill">
+        <span id="od-status" class="badge">{{ (d.status if d else '') }}</span>
+        <button type="button" class="btn" id="orderDrawerClose">{{ '닫기' if _lang=='ko' else 'Close' }}</button>
+    </div>
+</div>
+<div class="drawer-body" id="orderDrawerBody">
+    <section aria-label="summary">
+        <div class="meta">
+            <div>{{ '코드' if (lang or 'ko')=='ko' else 'Code' }}</div>
+            <div>{{ '상품' if (lang or 'ko')=='ko' else 'Goods' }}</div>
+            <div>{{ '수량' if (lang or 'ko')=='ko' else 'Qty' }}</div>
+            <div>{{ '금액' if (lang or 'ko')=='ko' else 'Amount' }}</div>
+            <div>{{ '입금계좌' if (lang or 'ko')=='ko' else 'Bank' }}</div>
+            <div id="od-bank">{{ (d.bank_snapshot.bank_name ~ ' ' ~ d.bank_snapshot.account_no ~ ' (' ~ d.bank_snapshot.holder ~ ')') if d else '' }}</div>
+            <div>{{ '만료(KST)' if (lang or 'ko')=='ko' else 'Expires (KST)' }}</div><div id="od-expires" data-kst="{{ d.expires_at_utc if d else '' }}">{{ d.expires_at_utc if d else '' }}</div>
+            <div>{{ '생성(KST)' if (lang or 'ko')=='ko' else 'Created (KST)' }}</div><div id="od-created" data-kst="{{ d.created_at_utc if d else '' }}">{{ d.created_at_utc if d else '' }}</div>
+            <div>{{ '구매자' if (lang or 'ko')=='ko' else 'Buyer' }}</div>
+            <div id="od-buyer">
+                <div id="od-buyer-name">{{ d.buyer.name if d else '' }}</div>
+                <div id="od-buyer-contact">{{ (d.buyer.phone ~ ' · ' ~ d.buyer.email) if d else '' }}</div>
+            </div>
+            <div>{{ '영수증' if (lang or 'ko')=='ko' else 'Receipt' }}</div>
+            <div id="od-receipt">
+                {% if d and d.receipt_image %}
+                    <a href="{{ d.receipt_image }}" target="_blank" rel="noopener">Open</a>
+                {% else %}
+                    <span>{{ '없음' if (lang or 'ko')=='ko' else 'None' }}</span>
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+    <section aria-label="actions" style="margin:12px 0">
+        <div class="actions">
+            <button class="btn" id="od-act-paid">{{ '입금확인' if (lang or 'ko')=='ko' else 'Mark paid' }}</button>
+            <button class="btn" id="od-act-expire">{{ '만료' if (lang or 'ko')=='ko' else 'Expire' }}</button>
+            <button class="btn" id="od-act-cancel">{{ '취소' if (lang or 'ko')=='ko' else 'Cancel' }}</button>
+        </div>
+    </section>
+
+    <section aria-label="note">
+        <label for="od-note">{{ '내부 메모' if (lang or 'ko')=='ko' else 'Internal note' }}</label>
+        <textarea id="od-note" rows="3" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;">{{ d.note_internal if d else '' }}</textarea>
+        <div style="margin-top:8px"><button class="btn" id="od-note-save">{{ '저장' if (lang or 'ko')=='ko' else 'Save' }}</button></div>
+    </section>
+
+    <section aria-label="history" style="margin-top:16px">
+        <h3 style="margin:6px 0">{{ '히스토리' if (lang or 'ko')=='ko' else 'History' }}</h3>
+        <ul class="timeline" id="od-history">
+            {% if d and d.history %}
+                {% for h in d.history %}
+                    <li data-kst="{{ h.at_utc }}">
+                        <strong>{{ h.to or '' }}</strong>
+                        <div>{{ h.reason or '' }}</div>
+                    </li>
+                {% endfor %}
+            {% endif %}
+        </ul>
+    </section>
+</div>
+<script>
+(function(){
+    function kfmt(){ document.querySelectorAll('#orderDrawer[data-kst]').forEach(function(el){var v=el.getAttribute('data-kst');el.textContent=v?I18n.formatDateKST(v):'';}); var am=document.getElementById('od-amount');if(am){var n=Number((am.textContent||'').replace(/[^0-9.-]/g,''));am.textContent=I18n.formatCurrencyKRW(n);}}
+    if(document.readyState==="complete"||document.readyState==="interactive"){kfmt();} else{document.addEventListener('DOMContentLoaded', kfmt, {once:true}); }
+})();
+</script>

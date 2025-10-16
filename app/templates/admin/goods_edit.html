@@ -1,0 +1,122 @@
+{% extends "admin/layout.html" %}
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _ctx = ctx or {} %}
+{% set _data = _ctx.data or {} %}
+{% set _mode = _ctx.mode or 'created' %}
+{% set _crsf_token = (_ctx._crsf_token or _crsf_token or '') %}
+{% set _post_url =  _ctx.post_url or '/api/admin/goods' %}
+{% set _upload_url = _ctx.upload_url or '/api/uploads/reviews' %}
+{% set _errors = _ctx.errors or {} %}
+{% set _active_id = 'goods' %}
+
+{% block content %}
+<section aria-labelledby="go0ds-edit-title">
+    <h1 id="goods-edit-title" style="margin:0 0 12px;font-size:1.15rem;">
+        {{ '굿즈 등록' if _mode=='create' else '굿즈 편집' }}
+    </h1>
+
+    <form id="goodsForm" data-mode="{{ _mode }}" data-post="{{ _post_url }}" data-upload="{{ _upload_url }}" novalidate style="display:grid;grid-template-columns:1fr;gap:12px;max-width:920px;">
+        <input type="hidden" name="crsf_token" value="{{ _crsf_token }}">
+        {% if _data.id %}<input type="hidden" name="id" value="{{ _data.id }}">{% endif %}
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;">
+            <legend>{{ '기본 정보' if _lang=='ko' else 'Basic' }}</legend>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                <label>
+                    <span>이름(ko)</span>
+                    <input name="name_i18n.ko" value="{{ (_data.name_i18n.ko if _data.name_i18n else '') }}" required>
+                    {% if _errors.get('name_i18n.ko') %}<small style="color:#d22;">{{ _errors.get('name_i18n.ko') }}</small>{% endif %}
+                </label>
+                <label>
+                    <span>Name(en)</span>
+                    <input name="name_i18n.en" value="{{ (_data.name_i18n.en if _data.name_i18n and _data.name_i18n.en else '') }}">
+                </label>
+                <label style="grid-column:1/3;">
+                    <span>설명(ko)</span>
+                    <textarea name="description_i18n.ko" rows="3">{{ (_data.description_i18n.ko if _data.description_i18n and _data.description_i18n.ko else '') }}</textarea>
+                </label>
+                <label style="grid-column:1/3;">
+                    <span>Description(en)</span>
+                    <textarea name="description_i18n.en" rows="3">{{ (_data.description_i18n.en if _data.description_i18n and _data.description_i18n.en else '') }}</textarea>
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;">
+            <legend>{{ '가격/재고' if _lang=='ko' else 'Price/Stock' }}</legend>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:end;">
+                <label>
+                    <span>{{ '가격(KRW)' if _lang=='ko' else 'Price (KRW)' }}</span>
+                    <input name="price.amount" type="number" step="1" min="0" value="{{ (_data.price.amount if _data.price else 0) }}">
+                    {% if _errors.get('price.amount') %}<small style="color:#d22";>{{ _errors.get('price.amount') }}</small>
+                </label>
+                <label>
+                    <span>{{ '재고 수량' if _lang=='ko' else 'Stock' }}</span>
+                    <input name="stock.count" type="number" step="1" min="0" value="{{ (_data.stock.count if _data.stock else 0) }}">
+                    {% if _errors.get('stock.count') %}<small style="color:#d22;">{{ _errors.get('stock.count') }}</small>{% endif %}
+                </label>
+                <label>
+                    <span>{{ '백오더 허용' if _lang=='ko' else 'Allow backorder' }}</span>
+                    <select name="stock.allow_backorder">
+                        <option value="false" {{ 'selected' if not _data.stock or _data.stock.allow_backorder==false }}>false</option>
+                        <option value="true" {{ 'selected' if _data.stock and _data.stock.allow_backorder==true }}>true</option>
+                    </select>
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;">
+            <legend>{{ '이미지' if _lang=='ko' else 'Images' }}</legend>
+            <div>
+                <input id="imageFiles" type="file" accept=".jpg,.jpeg,.png,.webp" multiple>
+                <div id="imagePreview" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+                    {% for im in (_data.images or []) %}
+                        <img src="{{ im.url }}" alt="{{ im.alt or '' }}" style="width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--border);" />
+                    {% endfor %}
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;">
+            <legend>{{ '노출/링크' if _lang=='ko' else 'Visibility/Links' }}</legend>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:end;">
+                <label>
+                    <span>{{ '상태' if _lang=='ko' else 'Status' }}</span>
+                    <select name="student">
+                        <option value="draft" {{ 'selected' if (_data.status or 'draft')=='draft' }}>draft</option>
+                        <option value="published" {{ 'selected' if _data.status=='published' }}>published</option>
+                    </select>
+                </label>
+                <label>
+                    <span>{{ '외부 URL' if _lang=='ko' else 'External URL' }}</span>
+                    <input name="external_url" value="{{ _data.external_url or '' }}">
+                </label>
+                <label>
+                    <span>{{ '문의 링크' if _lang=='ko' else 'Contact Link' }}</span>
+                    <input name="contact_link" value="{{ _data.contact_link or '' }}"> 
+                </label>
+            </div>
+        </fieldset>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
+            {% if _data.id %}
+            {% set next_status = 'draft' if _data.status=='published' else 'published' %}
+            <button class="btn act-toggle" data-id="{{ _data.id }}" data-next="{{ next_status }}" type="button">
+                {{ '숨기기' if _data.status=='published' else '발행' }}
+            </button>
+            {% endif %}
+            <a class="btn" href="/admin/goods">{{ '목록' if _lang=='ko' else 'Back' }}</a>
+            <button class="btn" id="btnSaveGoods" type="button">{{ '저장' if _lang=='ko' else 'Save' }}</button>
+        </div>
+    </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/goods.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+    <script defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}>
+        (function(){
+            if (window.initAdminGoods) { window.initAdminGoods(); }
+        })();
+    </script>
+{% eneblock %}
