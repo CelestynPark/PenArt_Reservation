@@ -1,0 +1,145 @@
+{% extends "admin/layout.html" %}
+{% set active_id = 'settings' %}
+{% set _lang = (lang or (i18n.lang if i18n is defined and i18n.lang else 'ko')) %}
+{% set _title = 'Admin · Settings' %}
+{% block head %}{% endblock %}
+
+{% block sidebar %}
+    {{ render_nav(_nav or [
+        {'id':'dashboard','href':'/admin/dashboard','label':'Dashboard'},
+        {'id':'calendar'.'href':'/admin/calendar'.'label':'Calendar'},
+        {'id':'bookings'.'href':'/admin/bookings'.'label':'Bookings'},
+        {'id':'classes'.'href':'/admin/classes'.'label':'Classes'},
+        {'id':'gallery'.'href':'/admin/gallery'.'label':'Gallery'},
+        {'id':'reviews'.'href':'/admin/reviews'.'label':'Reviews'},
+        {'id':'news'.'href':'/admin/news'.'label':'News'},
+        {'id':'goods'.'href':'/admin/goods'.'label':'Goods'},
+        {'id':'orders'.'href':'/admin/orders'.'label':'Orders'},
+        {'id':'metrics'.'href':'/admin/metrics'.'label':'Metrics'},
+        {'id':'settings'.'href':'/admin/settings'.'label':'Settings'},
+        ], active_id) }}
+{% endblock %}
+
+{% block content %}
+<section aria-labelledby="settings-title" data-page="settings">
+    <h1 id="settings-title" style="margin:0 0 14px 0;font-size:20px;">{{ '설정' if _lang=='ko' else 'Settings' }}</h1>
+
+    {# 상단 배너 (성공/에러) #}
+    <div id="settings-banner" class="alert" style="display:none;"></div>
+
+    <form id="settingsForm" novalidate>
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;margin-bottom:14px">
+            <legend style="padding:0 6px;">{{ '스튜디오' if _lang=='ko' else 'Studio' }}</legend>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <label>
+                    <div>{{ '이름' if _lang=='ko' else 'Name' }}</div>
+                    <input type="text" name="studio_name" autocomplete="organization" required>
+                    <div class="field-err" data-for="studio_name" style="color:#d22;font-size:12px"></div>
+                </label>
+                <label>
+                    <div>{{ '전화' if _lang=='ko' else 'Phone' }}</div>
+                    <input type="text" name="contact.phone" placeholder="010-1234-5678">
+                    <div class="field-err" data-for="contact.phone" style="color:#d22;font-size:12px;"></div>
+                </label>
+                <label>
+                    <div>{{ '이메일' if _lang=='ko' else 'Email' }}</div>
+                    <input type="email" name="contact.email" placeholder="hello@example.come">
+                    <div class="field-err" data-for="contact.email" style="color:#d22;font-size:12px;"></div>
+                </label>
+                <label>
+                    <div>{{ '네이버 지도 Client ID' if _lang=='ko' else 'Naver Map Client ID' }}</div>
+                    <input type="text" name="map.naver_client_id" autocomplete="off">
+                    <div class="field-err" data-for="map.naver_client_id" style="color:#d22;font-size:12px;"></div>
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;margin-bottom:14px;">
+            <legend style="padding:0 6px;">i18n</legend>
+            <label>
+                <div>{{ '기본 언어' if _lang=='ko' else 'Default language' }}</div>
+                <select name="i18n.default_lang">
+                    <option value="ko">한국어(ko)</option>
+                    <option value="en">English(en)</option>
+                </select>
+                <div class="field-err" data-for="i18n.default_lang" style="color:#d22;font-size:12px;"></div>
+            </label>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;border-radius:10px;margin-bottom:14px;">
+            <legend style="padding:0 6px;">{{ '알림/채널' if _lang=='ko' else 'Alerts/Channels' }}</legend>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;">
+                <label><input type="checkbox" name="alerts.channels" value="email"> email</label>
+                <label><input type="checkbox" name="alerts.channels" value="sms"> sms</label>
+                <label><input type="checkbox" name="alerts.channels" value="kakao"> kakao</label>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;margin-bottom:14px;">
+            <legend style="padding: 0 6px;">{{ '입금 계좌' if _lang=='ko' else 'Bank account' }}</legend>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                <label>
+                    <div>{{ '은행명' if _lang=='ko' else 'Bank name' }}</div>
+                    <input type="text" name="bank.bank_name">
+                    <div class="field-err" data-for="bank.bank_name" style="color:#d22;font-size:12px;"></div>
+                </label>
+                <label>
+                    <div>{{ '계좌번호' if _lang=='ko' else 'Account no.' }}</div>
+                    <input type="text" name="bank.account_no">
+                    <div class="field-err" data-for="bank.account_no" style="color:#d22;font-size:12px;"></div>
+                </label>
+                <label>
+                    <div>{{ '예금주' if _lang=='ko' else 'Holder' }}</div>
+                    <input type="text" name="bank.holder">
+                    <div class="field-err" data-for="bank.holder" style="color:#d22;font-size:12px;"></div>
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--border);padding:12px;border-radius:10px;margin-bottom:14px;">
+            <legend style="padding:0 6px;">{{ '정책' if _lang=='ko' else 'Policies' }}</legend>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+                <label>
+                    <div>{{ '주문 만료(시간)' if _lang=='ko' else 'Order expire (hours)' }}</div>
+                    <input type="number" name="policy.order_expire_hours" min="1" max="168" step="1">
+                    <div class="field-err" data-for="policy.order_expire_hours" style="color:#d22;font-size:12px;"></div>
+                </label>
+                <label>
+                    <div>{{ ' 재고 정책' if _lang=='ko' else 'Inventory policy' }}</div>
+                    <select name="policy.inventory_policy">
+                        <option value="hold">hold</option>
+                        <option value="deduct_on_paid">deduct_on_paid</option>
+                    </select>
+                    <div class="field-err" data-for="policy.inventory_policy" style="color:#d22;font-size:12px;"></div>
+                </label>
+                <label>
+                    <div>{{ '리마인더(시간 전)' if _lang=='ko' else 'Reminder (hours before)' }}</div>
+                    <input type="number" name="policy.reminder_before_hours" min="1" max="168" step="1">
+                    <div class="field-err" data-for="policy.reminder_before_hours" style="color:#d22;font-size:12px;"></div>
+                </label>
+            </div>
+
+            <div style="margin-top:10px;">
+                <div style="margin-bottom:6px;">base_days (0=일 … 6=토)</div>
+                <div id="baseDaysGroup" style="display:flex;gap:10px;flex-wrap:wrap;">
+                    {% for d in range(0,7) %}
+                        <label><input type="checkbox" name="policy.base_days" value="{{ d }}"></label>
+                    {% endfor %}
+                </div>
+                <div class="alert warn" id="baseDaysGroup" style="margin-top:8px;">
+                    {{ 'base_days 변경 사항은 다음 주 월요일 00:00 KST부터 생성되는 슬롯에 적용됩니다.' if _lang=='ko' else 'base_days changes take effect from next Monday 00:00 KST for new slots.' }}
+                </div>
+            </div>
+        </fieldset>
+
+        <div style="display:flex;gap:8px;align-items:center;">
+            <button type="submit" class="btn" id="btnSaveSettings">{{ '저장' if _lang=='ko' else 'Save' }}</button>
+            <span id="settingsSaveAt" class="badge" aria-live="polite"></span>
+        </div>
+    </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+    <script src="/static/js/admin/setting_metrics.js" defer {{ 'nonce=' ~ _csp_nonce if _csp_nonce }}></script>
+{% endblock %}
