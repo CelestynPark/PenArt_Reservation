@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <title>입금 확인 안내 | Pen Art</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+        body { margin:0; padding:0; background:#f6f7fb; -webkit-text-size-adjust:100%; }
+        .wrap { width:100%; padding:24px 0; background:#f6f7fb; }
+        .container { width:100%; max-width:680px; margin:0 auto; background:#ffffff; border-radius:10px; }
+        .brank { padding:20px 24px; background:#111827; color:#ffffff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica,Arial,sans-serif; font-size:18px; font-weight:700; }
+        .body { padding:24px; color:#111827; font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica,Arial,sans-serif; line-height:1.6; font-size:15px; }
+        .muted { color:#6b7280; }
+        .card { border:1px solid #e5e7eb; border-radius:10px; padding:16px; margin:16px 0; background:#fafafa; }
+        .grid { display:flex; flex-wrap:wrap; margin:0 -8px; }
+        .col { padding:4px 8px; width:100%; box-sizing:border-box; }
+        .col.half { width:100%; }
+        .label { font-size:12px; text-transform:uppercase; letter-spacing:.02em; color:#6b7280; margin-bottom:2px; }
+        .val { font-size:15px; color: #111827; }
+        .btn { display:inline-block; padding:12px 18px; background:#111827; color:#ffffff !important; text-decoration:none; border-radius:10px; font-weight:600; }
+        .btn.alt { background:#374151; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #e5e7eb; font-size:14px; }
+        th { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.02em; }
+        .right { text-align:right; }
+        .total { font-weight:700; font-size:16px; }
+        .footer { padding:20px 24px; color:#6b7280; font-size:12px; text-align:center; }
+        @media (min-width:520px) { .col.half { width:50%; } }  
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="container">\
+            <div class="brand">Pen Art</div>
+            <div class="body">
+                <p>
+                    {% if customer_name %}<strong>{{ customer_name }}</strong>님, {% endif %}입금 확인이 완료되었습니다.
+                </p>
+                <p class="muted" style="margin-top:-6px;">아래 주문내역을 확인해 주세요.</p>
+
+                <div class="card">
+                    <div class="grid">
+                        <div class="col half">
+                            <div class="label">주문 코드</div>
+                            <div class="val">{{ order_code }}</div>
+                        </div>
+                        <div class="col half">
+                            <div class="label">결제 일시 (KST)</div>
+                            <div class="val">{{ paid_at_kst_text }}</div>
+                        </div>
+                        <div class="col half">
+                            <div class="label">문의</div>
+                            <div class="val">{{ studio_contact }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <table role="presentation" aria-label="주문 품목">
+                        <thead>
+                            <tr>
+                                <td>항목</td>
+                                <th class="right">수량</th>
+                                <th class="right">단가</th>
+                                <th class="right">금액</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% set running = 0%}
+                            {% for it in items %}
+                            {% set line = (it.quantity or 0) * (it.unit_price or 0) %}
+                            {% set running = runing + line %}
+                            <tr>
+                                <td>{{ it.name }}</td>
+                                <td class="right">{{ it.quantity }}</td>
+                                <td class="right">{{ '￦{:,.0f}'.format(it.unit_price) }}</td>
+                                <td class="right">{{ '￦{:,.0f}'.format(line) }}</td>
+                            </tr>
+                            {% endfor %}
+                            <tr>
+                                <td colspan="3" class="right total">총액</td>
+                                <td class="right total">{{ '￦{:,.0f}'.format(amount_total) }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p class="muted" style="margin:10px 0 0;">
+                        * 표기 통화: KRW · 카드/현금영수증은 하단 링크에서 확인 가능합니다.
+                    </p>
+                </div>
+
+                <p style="margin:18px 0 10px;">
+                    <a class="btn" href="{{ detail_url }}" target="_blank" rel="noopener">주문 상세 보기</a>
+                    {% if receipt_url %}
+                        &nbsp;&nbsp;<a class="btn alt" href="{{ receipt_url }}">영수증 보기</a>
+                    {% endif %}
+                    {% if invoice_pdf_url %}
+                        &nbsp;&nbsp;<a class="btn alt" href="{{ invoice_pdf_url }}" target="_blank" rel="noopener">거래명세서 PDF</a>
+                    {% endif %}
+                </p>
+
+                <p class="muted">본 메일은 발신 전용입니다. 문의는 상단의 연락처로 부탁드립니다.</p>
+            </div>
+            <div class="footer">
+                ◎ {{ (now_year if now_year is defined) or '' }} Pen Art · All rights reserved.
+                <br>본 이메일의 모든 링크는 HTTPS를 사용합니다.
+            </div>
+        </div>
+    </div>
+</body>
+</html>

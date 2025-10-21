@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Order Created & Bank Transfer Instructions | Pen Art</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+        body { margin:0; padding:0; background:#f6f7fb; -webkit-text-size-adjust:100%; }
+        .wrap { width:100%; padding:24px 0; background:#f6f7fb; }
+        .container { width:100%; max-width:680px; margin:0 auto; background:#ffffff; border-radius:10px; }
+        .brand { padding:20px 24px; background:#111827; color:#ffffff; font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica,Arial, sans-serif; font-size:18px; font-weight:700; }
+        .body { padding:24px; color:#111827; font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica,Arial, sans-serif; line-height:1.6; font-size:15px; }
+        .muted { color:#6b7280; }
+        .card { border:1px solid #e5e7eb; border-radius:10px; padding:16px; margin:16px 0; background:#fafafa; }
+        .label { font-size:12px; text-transform:uppercase; letter-spacing:.02em; color:#6b7280; margin-bottom:4px; }
+        .val { font-size:15px; color:#111827; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+        .btn { display:inline-block; padding:12px 18px; background:#111827; color:#ffffff !important; text-decoration:none; border-radius:10px; font-weight:600; }
+        .btn .alt { background:#374151; }
+        .footer { padding:20px 24px; color:#6b7280; font-size:12px; text-align:center; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { text-align:left; padding:8px 0; font-size:14px; }
+        .right { text-align:right; }
+        .danger { color:#b91c1c; font-weight:600; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="container">
+            <div class="brand">Pen Art</div>
+            <div class="body">
+                <p>
+                    {% if customer_name %}Hello <strong>{{ customer_name }}</strong>, {% else %}Hello,{% endif %} your order has been created. Please complete the <strong>bank tranfer</strong> using the information below.
+                </p>
+
+                <div class="card">
+                    <div class="label">Order Code</div>
+                    <div class="val">{{ order_code }}</div>
+                    <div style="height:8px"></div>
+                    <div class="label">Amount Due</div>
+                    <div class="val">{{ '￦{:,.0f}'.format(amount_total) }} <span class="muted">(Currency: {{ currency }})</span></div>
+                </div>
+
+                <div class="card">
+                    <div class="label">Bank Details</div>
+                    <table role="presentation" aria-label="Bank details">
+                        <tr>
+                            <th class="muted" style="width:140px;">Bank</th>
+                            <td class="val">{{ bank.bank_name }}</td>
+                        </tr>
+                        <tr>
+                            <th class="muted">Account No.</th>
+                            <th class="val mono">{{ bank.account_no }}</th>
+                        </tr>
+                        <tr>
+                            <th class="muted">Account Holder</th>
+                            <th class="val">{{ bank_holder }}</th>
+                        </tr>
+                    </table>
+                    <p class="muted" style="margin:10px 0 0;">Please use the buyer′s name as the depositor′s name to avoid delays.</p>
+                </div>
+
+                <div class="card">
+                    <div class="label">Payment Deadline (KST)</div>
+                    <div class="val"><span class="danger">{{ expires_at_kst_text }}</span></div>
+                    <p class="muted" style="margin:10px 0 0;">If we don′t receive the payment by the deadline, the order may be <strong>canceled</strong>automatically.</p>
+                </div>
+
+                <p style="margin:18px 0 10px;">
+                    <a class="btn" href="{{ detail_url }}" target="_blank" rel="noopener">View Order Details</a>
+                    {% if receipt_upload_url %}
+                    &nbsp;&nbsp;<a class="btn alt" href="{{ receipt_upload_url }}" target="_blank" rel="noopener">Upload Receipt</a>
+                    {% endif %}
+                </p>
+
+                <p class="muted" style="margin-top:14px;">
+                    Contact: {{ studio_contact }}<br>
+                    This is an automated message. For assistance, please use the contact above.
+                </p>
+            </div>
+            <div class="footer">
+                ◎ {{ (now_year if now_year is defined) or '' }} Pen Art · All rights reserved.
+                <br>All links in this email use HTTPS.
+            </div>
+        </div>
+    </div>
+</body>
+</html>

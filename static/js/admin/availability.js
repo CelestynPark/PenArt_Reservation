@@ -375,7 +375,7 @@
     }
 
     function setBaseDay(days){
-        var uniq = Array.from(new.Set((days||[]).map(function(n){ return Number(n); }).filter(function(v){ return v>=0 && v<=6; }))).sort(function(a,b){return a-b;});
+        var uniq = Array.from(new Set((days||[]).map(function(n){ return Number(n); }).filter(function(v){ return v>=0 && v<=6; }))).sort(function(a,b){return a-b;});
         STATE.baseDays = uniq;
         _renderBaseDays();
         _schedulePreview();

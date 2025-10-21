@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Booking Cancellations Notice | Pen Art</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+        body { margin:0; padding:0; background:#f6f7fb;-webkit-text-size-adjust:100%; }
+        .wrap { width:100%; background:#f6f7fb; padding:24px 0; }
+        .container { width:100%; max-width:640px; margin:0 auto; background:#ffffff; border-radius:8px; overflow:hidden; }
+        .brand { padding:20px 24px; background:#111827; color:#ffffff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; font-size:18px; font-weight:15px; }
+        .body { padding:24px; color:#111827; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; line-height:1.6; font-size:15px; }
+        .muted { color:#6b7280; }
+        .card { border:1px solid #e5e7eb; border-radius:8px; padding:16px; margin:16px 0; background:#fefefe; }
+        .row { display:flex; flex-wrap:wrap; margin:0 -8px; }
+        .col { padding:4px 8px; box-sizing:border-box; width:100%; }
+        .label { font-size:12px; text-transform:uppercase; letter-spacing:.02rem; color:#6b7280; margin-bottom:2px; }
+        .val { font-size:15px; color:#111827; }
+        .btn { display:inline-block; padding:12px 18px; background:#111827; color:#ffffff !important; text-decoration:none; border-radius:8px; font-weight:600; }
+        .footer { padding:20px 24px; color:#6b7280; font-size:12px; text-align:center; }
+        @media (min-width:480px){ .col.half { width:50%; } }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="container">
+            <div class="brand">Pen Art</div>
+            <div class="body">
+                <p>Hello <strong>{{ customer_name }}</strong>,</p>
+                <p>Your booking has been <strong>canceled</strong>.Please find the details below.</p>
+
+                {% if cancel_reason_text %}
+                <div class="card">
+                    <div class="label">Reason</div>
+                    <div class="val">{{ cancel_reason_text }}</div>
+                </div>
+                {% endif %}
+
+                {% if policy_hint_text %}
+                <p class="muted" style="margin-top:0;">Policy Note:{{ policy_hint_text }}</p>
+                {% endif %}
+
+                <div class="card">
+                    <div class="row">
+                        <div class="col half">
+                            <div class="label">Class</div>
+                            <div class="val">{{ service_name }}</div>
+                        </div>
+                        <div class="col half">
+                            <div class="label">Booking Code</div>
+                            <div class="val">{{ booking_code }}</div>
+                        </div>
+                        <div class="col half">
+                            <div class="label">Date &amp; Time (KST)</div>
+                            <div class="val">{{ start_at_kst_text }}</div>
+                        </div>
+                        <div class="col half">
+                            <div class="label">Contact</div>
+                            <div class="val">{{ studio_contact }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <p style="margin:20px 0 28px;">
+                    <a class="btn" href="{{ detail_url }}" target="_blank" rel="noopener">View booking details</a>
+                </p>
+
+                <p class="muted">This email is not monitored. For assistance, please use the contact above.</p>
+            </div>
+            <div class="footer">
+                ◎{{ (now_year if now_year is defined) or '' }} Pen Art · All rights reserved.
+                <br>All links in this email use HTTPS.
+            </div>
+        </div>
+    </div>
+</body>
+</html>
