@@ -1,0 +1,1 @@
+Pen Art 예약 안내{% if customer_name %} ({{ customer_name }}님){% endif %}: {{ date_kst_text }} {{ time_kst_text }}, {{ service_name }}/ 코드 {{ booking_code }}/ 확인 {{ short_url }} {{ optout_text }}

@@ -1,0 +1,1453 @@
+openapi: 3.1.0
+info: 
+  title: Pen Art API
+  version: "1.0.0"
+  summary: Pen Art — Public/My/Admin REST API (Flask, MongoDB, RS)
+  description: |
+    - 표준 응답 포맷(전 구간 공통):
+
+    ````json
+    { "ok": true|false, "data": <T,optional>, "error": { "code": "ENUM", "message": "string" }?, "i18n": { "lang": "ko|en" }? }
+    ````
+
+    - 시간대 규칙: **서버 저장·연산은 UTC(ISO8601)**, **클라이언트 표시는 KST**.
+      - 클라이언트의 **KST 시간/날짜 쿼리*는 서버에서 **KST→UTC 변환* 후 처리.
+    - 보안: 전 구간 HTTPS, 관리자 세션 쿠기 + CSRF 헤더, CORS (화이트리스트), CSP 권장.
+servers:
+  - url: https://api.penart.example
+    description: Production
+  - url: https://localhost:5000
+    description: Local Dev
+tags:
+  - name: Auth
+  - name: Me
+  - name: Public
+  - name: Bookings
+  - name: Reviews`
+  - name: Orders
+  - name: Uploads
+  - name: Admin
+  - name: Health
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Admin/User session cookie
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: CSRF token for state-changing Admin endpoints
+  parameters:
+    PageParams:
+      name: Page
+      in: query
+      schema: { type: integer, minimun: 1, default: 1 }
+    SizeParam:
+      name: size
+      in: query
+      schema: { type: integer, minimun: 1, maximum: 100, default: 20 }
+    SortParam:
+      name: sort
+      in: query
+      schema: { type: string, example: "created_at:desc" }
+  responses:
+    Error429:
+      description: Rate limited
+      headers:
+        X-RateLimit-Remaining:
+          description: Remaining quota in the current minute window
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Error4xx5xx:
+      description: Error response
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+  schemas:
+    # ---- Envelope / Errors ----
+    ApiEnvelope:
+      type: object
+      properties:
+        ok: { type: boolean }
+        data: { nullable: true }
+        error: 
+          type: object
+          nullable: true
+          properties: 
+            code: { $ref: "#/components/schemas/ErrorCode" }
+            message: { type: string }
+        i18n:
+          type: object
+          nullable: true
+          properties:
+            lang:
+              type: string
+              enum: [ko, en]
+      required: [ok] 
+      additionalProperties: false
+    ErrorCode:
+      type: string
+      enum: 
+        - ERR_INVALID_PAYLOAD
+        - ERR_NOT_FOUND
+        - ERR_UNAUTHORIZED
+        - ERR_FORBIDDEN
+        - ERR_CONFLICT
+        - ERR_POLICY_CUTOFF
+        - ERR_RATE_LIMIT
+        - ERR_SLOT_BLOCKED
+        - ERR_INTERNAL
+    ErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: false }
+            error:
+              type: object
+              properties:
+                code: { $ref: "#/components/schemas/ErrorCode" }
+                message: { type: string }
+              required: [code, message]
+    PageMeta:
+      type: object
+      properties:
+        items: { type: array, items: {} }
+        total: { type: integer }
+        page: { type: integer }
+        size: { type: integer }
+      required: [items, total, page, size]
+    # ---- Common value objects ----
+    MoneyKRW:
+      type: object
+      properties:
+        amount: { type: integer, minimun: 0 }
+        currency: { type: string, const: "KRW" }
+      required: [amount. currency]
+    PhoneE164KR:
+      type: string
+      description: E.164 normalized Korean phone, e.g. +82-10-1234-5678
+      example: "+82-10-1234-5678"
+    # ---- Enums ----
+    BookingStatus:
+      type: string
+      enum: [requested, confirmed, completed, canceled, no_show]
+    OrderStatus:
+      type: string
+      enum: [created, awaiting_deposit, paid, canceled, expired]
+    GoodsStatus:
+      type: string
+      enum: [draft, published]
+    ReviewStatus:
+      type: string
+      enum: [published, hidden, flagged]
+    Channel:
+      type: string
+      enum: [email, sms, kako]
+    Source: 
+      type: string
+      enum: [web, admin, kakao] 
+    #---- Domain Schemas ----
+    UserProfile:
+      type: object
+      properties:
+        id: { type: string }
+        role: { type: string, enum: [customer, admin] }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { $ref: "#/components/schemas/PhoneE164KR" }
+        lang_pref: { type: string, enum: [ko,en] }
+        channels:
+          type: object
+          properties:
+            email:
+              {
+                type: object,
+                properties:
+                  {
+                    enabled: { type: boolean },
+                    verified_at: 
+                      { type: string, format: date-time, nullable: true },
+                  },
+              }
+            sms: { type: object, properties: { enabled: { type: boolean } } }
+            kakao: { type: object, properties: { enabled: { type: boolean } } }
+        created_at:
+          { type: string, format: date-time, description: "UTC ISO8601" }
+        updated_at:
+          { type: string, format: date-time, description: "UTC ISO8601" }
+      required: [id, role, name, email, created_at, updated_at]
+    Service:
+      type: object
+      properties:
+        id: { type: string }
+        name_i18n:
+          {
+            type: object,
+            properties: { ko: { type: string }, en: { type: string } },
+          }
+        duration_min: { type: integer, minimun: 1 }
+        level: { type: string }
+        description_i18n:
+          { type: object, additionalProperties: { type: string } }
+        policy:
+          type: object
+          properties:
+            cancel_before_hours: { type: integer, minimun: 0 }
+            change_before_hours: { type: integer, minimun: 0 }
+            no_show_after_min: { type: integer, minimun: 0 }
+        images: { type: array, items: { type: string, format: uri } }
+        is_active: { type: boolean }
+        order: { type: integer }
+        is_featured: { type: boolean }
+      required: [id, name_i18n, duration_min, is_active]
+    Work:
+      type: object
+      properties:
+        id: { type: string }
+        author_type: { type: string, enum: [artist, student] }
+        title_i18n:
+          {
+            type: object,
+            properties: { ko: { type: string }, en: { type: string } }
+          }
+        description_i18n:
+          { type: object, additionalProperties: { type: string } }
+        images: { type: array, items: { type: string, format: uri } }
+        tags: { type: array, items: { type: string } }
+        is_visible: { type: boolean }
+        order: { type: integer }
+        created_at: { type: string, format: date-time }
+      required: [id, author_type, title_i18n, is_visible, created_at] 
+    Goods:
+      type: object
+      properties:
+        id: { type: string }
+        name_i18n:
+          {
+            type: object,
+            properties: { ko: { type: string }, en: { type: string } }
+          }
+        description_i18n:
+          { type: object, additionalProperties: { type: string } }
+        images: { type: array, items: { type: string, format: uri } }
+        price: { $ref: "#/components/schemas/MoneyKRW" }
+        stock:
+          {
+            type: object,
+            properties:
+              { count: { type: integer }, allow_backorder: { type: boolean } },
+          }
+        status: { $ref: "#/components/schemas/GoodsStatus" }
+        contact_link: { type: string, format: uri, nullable: true }
+        external_url: { type: string, format: uri, nullable: true }
+      required: [id, name_i18n, price, status]
+    Bookings:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        customer_id: { type: string }
+        sercive_id: { type: string }
+        start_at:
+          { type: string, format: date-time, description: "UTC ISO8601" }
+        end_at: { type: string, format: date-time, description: "UTC ISO8601" }
+        status: { $ref: "#/components/schemas/BookingStatus" }
+        note_customer: { type: string, nullable: true }
+        note_internal: { type: string, nullable: true }
+        uploads: { type: array, items: { type: string, format: uri } }
+        policy_agreed_at: { type: string, format: date-time, nullable: true }
+        source: { $ref: "#/components/schemas/Source" }
+        history:
+          type: array
+          items: 
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              by: { type: string }
+              from: { $ref: "#/components/schemas/BookingStatus" }
+              to: { $ref: "#/components/schemas/BookingStatus" }
+              reason: { type: string, nullable: true }
+        created_at: { type : string, format: date-time }
+        updated_at: { type : string, format: date-time }
+      required:
+        [id, code, sercive_id, start_at, end_at, status, created_at, updated_at]
+    Review:
+      type: object
+      properties:
+        id: { type: string }
+        booking_id: { type: string }
+        customer_id: { type: string }
+        rating: { type: integer, minimun: 1, maximum: 5 }
+        quote_i18n: { type: object, additionalProperties: { type: string } }
+        comment_i18n:
+          {
+            type: object,
+            additionalProperties: { type : string },
+            nullable: true,
+          } 
+        images:
+          {
+            type: array,
+            items:
+              {
+                type: object,
+                properties:
+                  {
+                     url: { type: string, format: uri },
+                     has_person: { type: boolean },
+                  },
+              },
+          }
+        status: { $ ref: "#/components/schemas/ReviewStatus" }
+        helpful_count: { type : integer }
+        reported_count: { type: integer }
+        created_at: { type : string, format: date-time }
+      required: [id, booking_id, rating, status, created_at]
+    Order:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        goods_id: { type: string }
+        goods_snapshot:
+          type: object
+          properties:
+            name_i18n: { type: object, additionalProperties: { type: string } }
+            price: { $ref: "#/components/schemas/MoneyKRW" }
+            images: { type: array, items: { type: string, format: uri } }
+        quantity: { type: integer, minimun: 1 }
+        amount_total: { type: integer, minimun: 0 }
+        currency:  { type: string, const: "KRW" }
+        buyer:
+          type: object
+          properties:
+            name: { type: string }
+            phone: { $ref: "#/components/schemas/PhoneE164KR" }
+            email: { type: string, format: email }
+          required: [name, phone, email]
+        method: { type: string, const: "bank_transfer" }
+        bank_snapshot:
+          type: object
+          properties:
+            bank_name: { type: string }
+            account_no: { type: string }
+            holder:  { type: string}
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        receipt_image: { type: string, format: uri, nullable: true }
+        note_customer: { type: string, nullable: true }
+        note_internal: { type: string, nullable: true }
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              by: { type: string }
+              from: { $ref: "#/components/schemas/OrderStatus" }
+              to: { $ref: "#/components/schemas/OrderStatus" }
+              reason: { type: string, nullable: true }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required:
+        [
+          id,
+          code,
+          goods_id,
+          quantity,
+          amount_total,
+          currency,
+          status,
+          created_at,
+          updated_at,
+        ]
+    Studio:
+      type: object
+      properties:
+        name: { type: string }
+        bio_i18n: { type : object, additionalProperties: { type: string } }
+        avatar: { type: string, format: uri, nullable: true }
+        styles: { type: array, items: { type: string } }
+        address:
+          {
+            type: object,
+            properties:
+              {
+                text: { type: string },
+                lat: { type: number },
+                lng: { type: number },
+              },
+          }
+        hours: { type: string }
+        notice_i18n: { type: object, additionalProperties: { type: string } }
+        contact:
+          {
+            type: object,
+            properties:
+              { 
+                phone: { type: string },
+                email: { type: string, format: email },
+                sns: { type: array, items: { type: string, format: uri } },
+              },
+          }
+        map: { type : object, properties: { naver_client_id: { type: string } } }
+        is_active: { type: boolean }
+      required: [name, is_active]
+    AvailabilitySlots:
+      type: object
+      description: |
+        특정 KST 날짜의 가용 슬롯. 서버는 **KST→UTC 변환**을 내부에서 수행하여
+        충돌/예외/휴무를 반영한 UTC ISO8601 시작/종료를 반환한다.
+      properties:
+        date_kst: { type: string, patterns: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+        slots:
+          type: array
+          items:
+            type: object
+            properties:
+              start_at:
+                { type: string, format: date-time, description: "UTC ISO8601" }
+              end_at:
+                { type: string, format: date-time, description: "UTC ISO8601" }
+              service_id: { type : string }
+      required: [date_kst, slots]
+    # ---- Enveloped OKs (selected) ----
+    OkStudio:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: true }
+            data: { $ref: "#/components/schemas/Studio" }
+    OkServices:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: true }
+            data:
+              type: object
+              properties:
+                items:
+                  {
+                    type: array,
+                    items: { $ref: "#/components/schemas/Service" },
+                  }
+              required: [items]
+    OkGoodsList:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: true }
+            data:
+              type: object
+              properties:
+                items: 
+                  { type: array, items: { $ref: "#/components/schemas/Goods" } }
+                total: { type: integer }
+                page: { type: integer }
+                size: { type: integer }
+              required: [items, total, page, size]
+    OkAvailability:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: true }
+            data: { $ref: "#/components/schemas/AvailabilitySlots" }
+    OkBookingsSingle:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: true }
+            data: { $ref: "#/components/schemas/Bookings" }
+    OkOrderSingle:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: true }
+            data: { $ref: "#/components/schemas/Order" }
+    OkProfile:
+      allOf:
+        - $ref: "#/components/schemas/ApiEnvelope"
+        - type: object
+          properties:
+            ok: { const: true }
+            data: { $ref: "#/components/schemas/UserProfile" }
+
+paths:
+  # -------------------------
+  # 5.1 Auth/Me
+  # -------------------------
+  /api/auth/magiclink:
+    post:
+      tags: [Auth]
+      summary: 요청자 이메일로 매직링크 발송
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" } # envelope without data (ok true)
+        "400": { $ref: "#/components/responses/Error4xx5xx" }
+        "429": { $ref: "#/components/responses/Error429" }
+  /api/auth/verify:
+    post:
+      tags: [Auth]
+      summary: 매직링크 검증 및 세션 발급
+      requestBody:  
+        required: true
+        content:
+          application/json:
+            schema:
+              {
+                type: object,
+                required: [token],
+                properties: { token: { type: string } },
+              }
+      responses:
+        "200": { $ref: "#/components/schemas/OkProfile" }
+        "400": { $ref: "#/components/responses/Error4xx5xx" }
+        "401": { $ref: "#/components/responses/Error4xx5xx" }
+        "429": { $ref: "#/components/responses/Error429" }
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: 로그아웃
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+        "429": { $ref: "#/components/responses/Error429" }
+
+  /api/admin/auth/login:
+    post:
+      tags: [Auth, Admin]
+      summary: 관리자 로그인
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              {
+                type: object,
+                required: [email, password],
+                properties:
+                  {
+                    email: { type: string, format: email },
+                    password: { type: string },
+                  },
+              }
+      responses:
+        "200": { $ref: "#/components/schemas/OkProfile" }
+        "401": { $ref: "#/components/responses/Error4xx5xx" }
+        "429": { $ref: "#/components/responses/Error429" }
+  /api/admin/auth/logout:
+    post:
+      tags: [Auth, Admin]
+      summary: 관라지 로그아웃
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+
+  /api/me/profile:
+    get:
+      tags: [Me]
+      summary: 내 프로필 조회
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/schemas/OkProfile" }
+        "401": { $ref: "#/components/responses/Error4xx5xx" }
+    put:
+      tags: [Me]
+      summary: 내 프로필 수정
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                phone: { type: string }
+                lang_pref: { type: string, enum: [ko,en] }
+                channels:
+                  type: object
+                  properties:
+                    email:
+                      {
+                        type: object,
+                        properties: { enabled: { type: boolean } },
+                      }
+                    sms:
+                      {
+                        type: object,
+                        properties: { enabled: { type: boolean } },
+                      }
+                    kakao:
+                      {
+                        type: object,
+                        properties: { enabled: { type: boolean } },
+                      }
+      responses:
+        "200": { $ref: "#/components/schemas/OkProfile" }
+        "401": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/me/bookings:
+    get:
+      tags: [Me, Bookings]
+      summary: 내 에약 목록
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [
+          { $ref: "#/components/parameters/PageParams" },
+          { $ref: "#/components/parameters/SizeParams" },
+          { $ref: "#/components/parameters/SortParams" },
+        ]
+      responses:
+        "200":
+          description: OKs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      ok: { const: true }
+                      data: { $ref: "#/components/schemas/PageMeta" }
+        "401": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/me/orders:
+    get:
+      tag: [Me, Orders]
+      summary: 내 주문 목록
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [
+          { $ref: "#/components/parameters/PageParams" },
+          { $ref: "#/components/parameters/SizeParams" },
+          { $ref: "#/components/parameters/SortParams" },
+        ]
+      responses:
+        "200":
+          description: OKs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      ok: { const: true }
+                      data: { $ref: "#/components/schemas/PageMeta" }
+  /api/me/reviews:
+    get:
+      tags: [Me, Reviews]
+      summary: 내 리뷰 목록
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [
+          { $ref: "#/components/parameters/PageParams" },
+          { $ref: "#/components/parameters/SizeParams" },
+          { $ref: "#/components/parameters/SortParams" },
+        ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      ok: { const: true }
+                      data: { $ref: "#/components/schemas/PageMeta" }
+
+  # ---------------------------
+  # 5.2 Public
+  # ---------------------------                      
+  /api/studio:
+    get:
+      tags: [Public]
+      summary: 스튜디오 공개 정보
+      responses:
+        "200": { $ref: "#/components/schemas/OkStudio" }
+        "429": { $ref: "#/components/responses/Error429" }
+  /api/classes:
+    get:
+      tags: [Public]
+      summary: 수업 리스트
+      parameters:
+        [
+          { $ref: "#/components/parameters/PageParams" },
+          { $ref: "#/components/parameters/SizeParams" },
+          { $ref: "#/components/parameters/SortParams" },
+        ]
+      responses:
+        "200": { $ref: "#/components/schemas/OkStudio" }
+        "429": { $ref: "#/components/responses/Error429" }
+  /api/classes/{id}:
+    get:
+      tags: [Public]
+      summary: 수업 상세
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      ok: { const: true }
+                      data: { $ref: "#/components/schemas/Service" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/gallery:
+    get:
+      tags: [Public]
+      summary: 작품 리스트(작가/학생)
+      parameters:
+        - name: author
+          in: query
+          schema: { type: string, enum: [artist, student] }
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/SizeParam"
+      responses:
+        "200":
+          description: OK
+          content:  
+            applicationi/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      ok: { const: true }
+                      data: 
+                        type: object
+                        properties:
+                          items:  
+                            {
+                              type: array,
+                              items: { $ref: "#/components/schemas/Work" },
+                            }
+                          total: { type: integer }
+                          page: { type: integer }
+                          size: { type: integer }
+                        required: [items, total, page, size]
+  /api/gallery/{id}:
+    get:
+      tags: [Public]
+      summary: 작품 상세
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      ok: { const: true }
+                      data: { $ref: "#/components/schemas/Work" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/news:
+    get:
+      tags: [Public]
+      summary: 뉴스 리스트
+      parameters:
+        [
+          { $ref: "#/components/parameters/PageParam" },
+          { $ref: "#/components/parameters/SizeParam" },
+        ]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/news/{slug}:
+    get:
+      tags: [Public]
+      summary: 뉴스 상세(슬러그)
+      parameters:
+        [{ name: slug, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/goods:
+    get:
+      tags: [Public]
+      summary: 굿즈 리스트
+      parameters:
+        [
+          { $ref: "#/components/parameters/PageParam" },
+          { $ref: "#/components/parameters/SizeParam" }, 
+        ]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/goods/{slug}:
+    get:
+      tag: [Public]
+      summary: 굿즈 상세(슬러그)
+      parameters:
+        [{ name: slug, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiEnvelope"
+                  - type: object
+                    properties:
+                      ok: { const: true }
+                      data: { $ref: "#/components/schemas/Goods" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/availability:
+    get:
+      tags: [Public]
+      summary: 특정 KST 날짜의 가용 슬롯 조회
+      description: |
+        쿼리 파라미터 `date`는 **KST 기준 'YYYY-MM-DD'**. 서버는 이 값을 **KST→UTC 변환** 후
+        rules/exceptions/base_days를 적용하여 **UTC ISO8601** 슬롯을 반환한다.
+      parameters: 
+        - name: date
+          in: query
+          required: true
+          schema: { type: string, patterns: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+      responses:
+        "200": { $ref: "#/components/schemas/OkAvailability" }
+        "400": { $ref: "#/components/responses/Error4xx5xx" }
+
+  # -------------------------
+  # 5.3 Bookings
+  # -------------------------
+  /api/bookings:
+    post:
+      tags: [Bookings]
+      summary: 예약 생성
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [service_id, start_at, name, phone, agree]
+              properties:
+                service_id: { type : string }
+                start_at:
+                  {
+                    type: string,
+                    format: date-time,
+                    description: "UTC ISO8601",
+                  }
+                name: { type: string }
+                phone: { type: string }
+                memo: { type: string, nullable: true }
+                agree: { type: boolean }
+                uploads: { type: array, items: { type: string, format: uri } }
+      responses:
+        "200": { $ref: "#/components/schemas/OkBookingsSingle" }
+        "409": { $ref: "#/components/responses/Error4xx5xx" } # unique conflict
+        "422": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/bookings/{id}:
+    get:
+      tags: [Bookings]
+      summary: 예약 상세(본인)
+      security: [{ sessionCookie: [] }]
+      parameters: 
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/schemas/OkBookingsSingle" }
+        "403": { $ref: "#/components/responses/Error4xx5xx" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+    patch:
+      tags: [Bookings]
+      summary: 예약 변경/취소/노쇼/메모
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [action]
+            properties:
+              action:
+                type: string
+                enum: [change, cancel, no_show, memo]
+              start_at:
+                {
+                  type: string,
+                  format: date-time,
+                  description: "UTC ISO8601 (change 시)", 
+                }
+              memo: { type: string, nullable: true }
+      responses:
+        "200": { $ref: "#/components/schemas/OkBookingsSingle" }
+        "403": { $ref: "#/components/responses/Error4xx5xx" }
+        "409": { $ref: "#/components/responses/Error4xx5xx" }
+        "422": { $ref: "#/components/responses/Error4xx5xx" }
+
+  # -------------------------
+  # 5.4 Reviews
+  # -------------------------
+  /api/reviews:
+    get:
+      tags: [Reviews]
+      summary: 리뷰 목록
+      parameters:
+        [
+          { $ref: "#/components/parameters/PageParam" },
+          { $ref: "#/components/parameters/SizeParam" },
+          { $ref: "#/components/parameters/SortParam" },
+        ]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+      post:
+        tags: [Reviews]
+        summary: 리뷰 작성(예약자)
+        security: [{ sessionCookie: [] }]
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [booking_id, rating, quote_i18n]
+                properties:
+                  booking_id: { type: string }
+                  rating: { type: integer, minimun: 1, maximum: 5 }
+                  quote_i18n:
+                    { type: object, additionalProperties: { type: string } }
+                  comment_i18n:
+                    { type: object, additionalProperties: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/reviews/{id}:
+    get:
+      tags: [Reviews]
+      summary: 리뷰 상세
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+      patch:
+        tags: [Reviews]
+        summary: 리뷰 수정
+        security: [{ sessionCookie: [] }]
+        parameters:
+          [{ name: id, in: path, required: true, schema: { type: string } }]
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: { type: object }
+        responses:
+          "200": { $ref: "#/components/responses/Error4xx5xx" }
+  
+  # -------------------------
+  # 5.5 Orders
+  # -------------------------
+  /api/orders:
+    post:
+      tags: [Orders]
+      summary: 주문 생성(무통장)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [goods_id, quantity, buyer]
+              properties:
+                goods_id: { type: string }
+                quantity: { type: integer, minimun: 1 }
+                buyer:
+                  type: object
+                  required: [name, phone, email]
+                  properties:
+                    name: { type: string }
+                    phone: { type: string }
+                    email: { type: string, format: email }
+      responses:
+        "200": { $ref: " #/components/schemas/OkOrderSingle" }
+        "409": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/orders/{id}:
+    get:
+      tags: [Orders]
+      summary: 주문 상세(본인)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/schemas/OkOrderSingle" }
+        "403": { $ref: "#/components/responses/Error4xx5xx" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+    patch:
+      tags: [Orders]
+      summary: 고객 취소/영수증 첨부
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [cancel, attach_receipt] }
+                receipt_image: { type: string, format: uri }
+      responses:
+        "200": { $ref: "#/components/schemas/OkOrderSingle" }
+        "409": { $ref: "#/components/responses/Error4xx5xx" }
+  
+  # -------------------------
+  # 5.6 Uploads
+  # -------------------------
+  /api/uploads/reviews:
+    post:
+      tags: [Uploads]
+      summary: 리뷰 이미지 업로드
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+        "413": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/uploads/receipts:
+    post:
+      tags: [Uploads]
+      summary: 영수증 업로드
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: 
+                  type: string 
+                  format: binary
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+        "413": { $ref: "#/components/responses/Error4xx5xx" }
+
+  # -------------------------
+  # 5.7 Admin
+  # -------------------------
+  /api/admin/bookings:
+    get:
+      tags: [Admin, Bookings]
+      summary: 예약 목록(필터/정렬/페이지)
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:  
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/SizeParam"
+        - $ref: "#/components/parameters/SortParam"
+        - {
+            name: status,
+            in: query,
+            schema: { $ref: "#/components/schemas/BookingStatus" },
+          }
+        - { name: service_id, in: query, schema: { type: string } }
+        - {
+            name: date_from,
+            in: query,
+            schema: { type: string, format: date-time },
+          }
+        - {
+            name: date_to,
+            in: query,
+            schema: { type: string, format: date-time },
+          }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/admin/bookings/{id}:
+    patch:
+      tags: [Admin, Bookings]
+      summary: 승인/거절/변경/노쇼/메모(관리자)
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content::
+          application/json:
+            schema:
+              {
+                type: object,
+                required: [action],
+                properties:
+                  {
+                    action: { type: string },
+                    start_at: { type: string, format: date-time },
+                    memo: { type: string },
+                  },
+              }
+      responses:
+        "200": { $ref: "#/components/schemas/OkOrderSingle" }
+  /api/admin/classes:
+    get:
+      tags: [Admin]
+      summary: 수업 리스트
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    post:
+      tags: [Admin]
+      summary: 수업 생성
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Service" }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/admin/classes/{id}:
+    get:
+      tags: [Admin]
+      summary: 수업 상세
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+        "404": { $ref: "#/components/responses/Error4xx5xx" }
+    put:
+      tags: [Admin]
+      summary: 수업 수정
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Service" }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    delete:
+      tags: [Admin]
+      summary: 수업 삭제
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:  
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  
+  /api/admin/gallery:
+    get:
+      tags: [Admin]
+      summary: 작품 리스트
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    post:
+      tags: [Admin]
+      summary: 작품 등록
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:  
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Work" }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/admin/gallery/{id}:
+    get:
+      tags: [Admin]
+      summary: 작품 상세
+      security: [{ sessionCookie: [] }]
+      parameters: 
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    put:
+      tags: [Admin]
+      summary: 작품 수정
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Work" }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  
+  /api/admin/reviews:
+    get:
+      tags: [Admin]
+      summary: 리뷰 리스트
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+      "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/admin/reviews/{id}:
+    patch:
+      tags: [Admin]
+      summary: 리뷰 표시/숨김/신고 처리
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, requirede: true, schema: { true: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: 
+              {
+                type: object,
+                required: [action],
+                properties:
+                  {
+                    action: { type: string, enum: [publish, hide, flag] },
+                    reason: { type: string },
+                  },
+              }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  
+  /api/admin/news:
+    get:
+      tags: [Admin]
+      summary: 뉴스 리스트
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    post:
+      tags: [Admin]
+      summary: 뉴스 작성
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/admin/news/{id}:
+    get:
+      tags: [Admin]
+      summary: 뉴스 상세
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    put:
+      tags: [Admin]
+      summary: 뉴스 수정
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: 
+        required: true
+        content: 
+          application/json:
+            schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+
+  /api/admin/goods:
+    get:
+      tags: [Admin]
+      summary: 굿즈 리스트(재고/상태/가격)
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    post:
+      tags: [Admin]
+      summary: 굿즈 생성
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content: 
+          application/json:
+            schema: { $ref: "#/components/schemas/Goods" }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/admin/goods/{id}:
+    get:
+      tags: [Admin]
+      summary: 굿즈 상세
+      security: [{ sessionCookie: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    put:
+      tags: [Admin]
+      summary: 굿즈 수정
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Goods" }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  
+  /api/admin/orders:
+    get:
+      tags: [Admin, Orders]
+      summary: 주문 리스트(상태/기한/금액/고객)
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/SizeParam"
+        - $ref: "#/components/parameters/SortParam"
+        - {
+            name: status,
+            in: query,
+            schema: { $ref: "#/components/schemas/OrderStatus" },
+          }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  /api/admin/orders/{id}:
+    patch:
+      tags: [Admin, Orders]
+      summary: 입금 확인/취소/만료/메모
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      parameters:
+        [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              {
+                type: object,
+                required: [action],
+                properties:
+                  {
+                    action:
+                      { type: string, enum: [mark_paid, cancel, expire, note] },
+                    note: { type: string },
+                  },
+              }
+      responses:
+        "200": { $ref: "#/components/schemas/OkOrderSingle" }
+
+  /api/admin/availability:
+    get:
+      tags: [Admin]
+      summary: rules/exceptions/base_days 조회
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    patch:
+      tags: [Admin]
+      summary: rules/exceptions/base_days 수정
+      description: |
+        **기준 수업 요일(base_days)** 변경 시 **KST 기준 다음주 월요일 00:00* 이후 생성되는 슬롯부터 적용된다.
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses: 
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+
+  /api/admin/settings:
+    get:
+      tags: [Admin]
+      summary: 설정 조회
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+    put:
+      tags: [Admin]
+      summary: 설정 저장
+      security: [{ sessionCookie: [], csrfHeader: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" } 
+      
+  /api/admin/metrics:
+    get:
+      tags: [Admin]
+      summary: 일/주/월 지표 집계 조회
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: date
+          in: query
+          schema: { type: string, format: date }
+        - name: type 
+          in: query
+          schema: { type: string, enum: [daily, weekly, monthly] }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+  
+  /api/admin/search:
+    get:
+      tags: [Admin]
+      summary: 글로벌 검색(코드/이름/전화/이메일)
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+
+  # -------------------------
+  # 5.8 Health/Readiness
+  # -------------------------
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/responses/Error4xx5xx" }
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe (Mongo ping, 템플릿/큐 상태)
+      responses:
+        "200": { $ref: "#/components/responses/Error4xx5xx" }
+        "503": { $ref: "#/components/responses/Error4xx5xx" }

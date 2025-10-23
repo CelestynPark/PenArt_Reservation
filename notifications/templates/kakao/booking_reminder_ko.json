@@ -1,0 +1,24 @@
+{
+    "template_code": "PA_BOOKING_REMIND_V1",
+    "variables": {
+        "customer_name": "{{ customer_name }}",
+        "service_name": "{{ service_name }}",
+        "date_kst_text": "{{ date_kst_text }}",
+        "time_kst_text": "{{ time_kst_text }}",
+        "booking_code": "{{ booking_code }}"
+    },
+    "buttons": [
+        {
+            "type": "WL",
+            "name": "예약 확인",
+            "linkMobile": "{{ detail_url }}",
+            "linkPc": "{{ detail_url_pc }}"
+        },
+        {
+            "type": "WL",
+            "name": "스튜디오",
+            "linkMobile": "{{ studio_url }}",
+            "linkPc": "{{ studio_url_pc }}" 
+        }
+    ]
+}

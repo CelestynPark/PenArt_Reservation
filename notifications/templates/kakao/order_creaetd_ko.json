@@ -1,0 +1,25 @@
+{
+    "template_code": "PA_ORDER_CREATED_V1",
+    "variabled": {
+        "order_code": "{{ order_code }}",
+        "amount_text": "{{ amount_text }}",
+        "bank_name": "{{ bank_name }}",
+        "account_no_masked": "{{ account_no_masked }}",
+        "holder": "{{ holder }}",
+        "expires_kst_text": "{{ expires_kst_text }}" 
+    },
+    "buttons": [
+        {
+            "type": "WL",
+            "name": "입금 안내",
+            "linkMobile": "{{ pay_url }}",
+            "linkPc": "{{ pay_url_pc }}"
+        },
+        {
+            "type": "WL",
+            "name": "주문 확인",
+            "linkMobile": "{{ order_url }}",
+            "linkPc": "{{ order_url_pc }}"
+        }
+    ]
+}

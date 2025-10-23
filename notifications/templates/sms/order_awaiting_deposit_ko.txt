@@ -1,0 +1,1 @@
+Pen Art 입금 안내: {{ order_code }} / {{ amount_text }} / {{ bank_name }} {{ account_no_masked }} {{ holder }} / 기한 {{ expires_kst_text }} / 안내 {{ short_url }} {{ optout_text }}
